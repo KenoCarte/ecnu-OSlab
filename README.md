@@ -1,89 +1,406 @@
-# ECNU OSLab 2025
+# LAB-9: 文件系统 之 文件管理与全系统整合
 
-## 简介
+**前言**
 
-本实验是华东师范大学计算机科学与技术学院的**操作系统课程实验（2025秋）** (由石亮教授授课, 助教夏浩东设计)
+恭喜你完成了前8次实验, 来到最后一个关卡
 
-实验目标是基于C语言和RISC-V体系结构**从零开始设计实现一个简单的操作系统内核（大约5500行代码）**
+最后一个实验的内容比较多, 难度也比较大, 既是实验也是测验
 
-建议参考MIT的xv6-riscv:**git://g.csail.mit.edu/xv6-labs-2020** (**util** 分支)
+- 测验你对整个系统的理解：内存、进程、文件系统、用户态程序等
 
-## 和MIT的xv6实验有何区别
+- 测验你的编码与调试能力：文件操作、路径操作、ELF解析、系统调用等
 
-- MIT的xv6实验本质上是**在一个基础的能运行的内核上做修改**以通过测试
+不用担心, 助教会屏蔽大部分繁琐但不重要的工作, 并梳理实验脉络
 
-    你做的修改依赖于已有代码, 通常不需要增加或修改太多行代码就能达成目的
+这大概要花费你好几天时间, 现在就开始吧!
 
-    每次新的实验都基于新的分支, 不保留之前实验的修改
+## 代码组织结构
 
-- 从0到1的OS实验并不基于任何已经能运行的内核, 你需要**从头开始一步步搭建内核**
+```
+ECNU-OSLAB-2025-TASK
+├── LICENSE        开源协议
+├── .vscode        配置了可视化调试环境
+├── registers.xml  配置了可视化调试环境
+├── .gdbinit.tmp-riscv xv6自带的调试配置
+├── common.mk      Makefile中一些工具链的定义
+├── Makefile       编译运行整个项目 (CHANGE)
+├── picture        README使用的图片目录 (CHANGE)
+├── README.md      实验指导书 (CHANGE)
+└── src            源码
+    ├── kernel     内核源码
+    │   ├── arch   RISC-V相关
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── boot   机器启动
+    │   │   ├── entry.S
+    │   │   └── start.c
+    │   ├── lock   锁机制
+    │   │   ├── spinlock.c
+    │   │   ├── sleeplock.c
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── lib    常用库
+    │   │   ├── cpu.c
+    │   │   ├── console.c (NEW, 行缓冲的输入输出)
+    │   │   ├── print.c (CHANGE, 在print_init中调用console_init进行初始化)
+    │   │   ├── uart.c (CHANGE, 将uart_intr中的switch-case逻辑换成cons_edit)
+    │   │   ├── utils.c
+    │   │   ├── method.h (CHANGE)
+    │   │   ├── mod.h
+    │   │   └── type.h (CHANGE)
+    │   ├── mem    内存模块
+    │   │   ├── pmem.c (TODO, 增加函数pmem_stat用于获取剩余页面数量信息)
+    │   │   ├── kvm.c
+    │   │   ├── uvm.c (TODO, 修改uvm_heap_grow以支持flag的输入)
+    │   │   ├── mmap.c
+    │   │   ├── method.h (CHANGE)
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── trap   陷阱模块
+    │   │   ├── plic.c
+    │   │   ├── timer.c
+    │   │   ├── trap_kernel.c
+    │   │   ├── trap_user.c
+    │   │   ├── trap.S
+    │   │   ├── trampoline.S
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── proc   进程模块
+    │   │   ├── proc.c (TODO, 增加open_file和cwd的初始化、设置、销毁逻辑)
+    │   │   ├── exec.c (TODO, 操作ELF文件以填充新的进程)
+    │   │   ├── swtch.S
+    │   │   ├── method.h (CHANGE)
+    │   │   ├── mod.h
+    │   │   └── type.h (CHANGE)
+    │   ├── syscall 系统调用模块
+    │   │   ├── syscall.c (TODO, 新的系统调用)
+    │   │   ├── sysfunc.c (TODO, 新的系统调用)
+    │   │   ├── method.h (TODO, 新的系统调用)
+    │   │   ├── mod.h
+    │   │   └── type.h (TODO, 新的系统调用)
+    │   ├── fs     文件系统模块
+    │   │   ├── bitmap.c
+    │   │   ├── buffer.c
+    │   │   ├── inode.c
+    │   │   ├── device.c (TODO, 增加设备文件操作逻辑)
+    │   │   ├── dentry.c (TODO, 增加目录和路径的功能)
+    │   │   ├── fs.c (TODO, 增加文件操作逻辑)
+    │   │   ├── virtio.c
+    │   │   ├── method.h (CHANGE)
+    │   │   ├── mod.h
+    │   │   └── type.h (CHANGE)
+    │   └── main.c
+    ├── mkfs       磁盘映像初始化
+    │   ├── mkfs.c (CHANGE, 增加输入参数的支持)
+    │   └── mkfs.h (CHANGE)
+    ├── loader     存放链接脚本
+    │   ├── kernel.ld (CHANGE, 移动了位置)
+    │   └── user.ld (NEW, 定义了用户态ELF程序的链接规则)
+    └── user       用户程序
+        ├── initcode.c (CHANGE, 启动测试程序)
+        ├── syscall.c (NEW, 封装了系统调用)
+        ├── help.c (NEW, 其他公共库函数)
+        ├── test_1.c (NEW, 测试点)
+        ├── test_2.c (NEW, 测试点)
+        ├── test_3.c (NEW, 测试点)
+        ├── test_4.c (NEW, 测试点)
+        ├── help.h (NEW, 库函数和重要定义)
+        ├── sys.h
+        ├── syscall_arch.h
+        └── syscall_num.h (CHANGE, 新的系统调用)
+```
 
-    这意味着你调用的几乎所有函数都是自己写的, 实验结束时你至少要产出3000+行代码
+**标记说明**
 
-    实验具有连续性, 你这次写的代码下次还会用到, 所以要对自己的代码负责
+**NEW**: 新增源文件, 直接拷贝即可, 无需修改
 
-    听起来更具挑战性, 但是不用太担心, 助教会提供大的逻辑框架, 你还能查看xv6的实现作为指导
+**CHANGE**: 旧的源文件发生了更新, 直接拷贝即可, 无需修改
 
-- 三种类型的OS实验:
+**TODO**: 你需要实现新功能 / 你需要完善旧功能
 
-    **锦上添花型**: 基于一个完整的能运行的内核, 增加新的功能或特性, 如xv6
+## 第1步: 准备工作
 
-    **完型填空型**: 内核基本完整, 但是在某些函数中挖去了一部分关键代码等你来填, 如chcore
+1. 新建目录**src/loader/**, 将kernel.ld放到这个目录下并创建user.ld (可以比较一下它们的异同)
 
-    **从零开始型**: 给出设计框架和各阶段目标, 从头开始一步步实现一个简单内核
+2. 在**src/kernel/mem/pmem.c**中实现`pmem_stat`, 用于获取当前的可用内存情况
 
-## 从头开始“造轮子”有什么意义
+3. 修改**src/kernel/mem/uvm.c**中的`uvm_heap_grow`, 内存区域的flag由默认的可读可写改成可输入的参数
 
-已知现有的OS内核都是千万行级别的代码, 完全不是一个人能搞定的, 那造一个这样简单的轮子有什么用呢？
+4. 为了支持行缓冲的输入, 我们在**src/kernel/lib/console.c**中实现了控制台的抽象。它的诞生对**uart.c**和**print.c**产生了一些影响, 请你按照提示进行对应的修改
 
-1. 首先, 作为这个领域的初学者, 要想深刻体会OS内核的运行原理, 光靠阅读别人的代码是远远不够的
+5. 阅读 **src/user/** 中的各个源文件, 理解它们的组织架构和测试流程
 
-    最好一边阅读一边动手实现简单的demo, 这个demo不需要复杂的算法和优异的性能, 只需要体现最基础最核心的设计思想
+6. 阅读**Makefile**和**src/mkfs/mkfs.c**, 理解各个测试程序如何写入**disk.img**
 
-    **每一个优秀的车辆工程师在小时候总是拆过和装过许多玩具汽车**
+## 第2步: 完善文件系统 (fs)
 
-2. 其次, 跳脱出操作系统这个大背景, 动手写内核也是锻炼软件系统级别编程能力的好机会
+**2.1 在lab-8中实现了dentry和path的部分函数，我们先进行补全**
 
-    真实的软件开发不可能像算法比赛一样提交单个文件就够了
+```c
+// in dentry.c
+uint32 dentry_search_2(inode_t *ip, uint32 inode_num, char *name); // 基于inode_num搜索name
+uint32 dentry_transmit(inode_t *ip, uint64 dst, uint32 len, bool is_user_dst); // 传输有效目录项
+uint32 inode_to_path(inode_t *ip, char *path, uint32 len); // 与__path_to_inode相反的解析过程
+inode_t* path_create_inode(char *path, uint16 type, uint16 major, uint16 minor); // 创建新的inode
+uint32 path_link(char *old_path, char *new_path); // 建立硬链接
+uint32 path_unlink(char *path); // 解除硬链接
+```
 
-    你可以把它单纯看作一个普通的项目去开发, 了解如何编写和管理一个多文件的大型项目
+前两个函数相对简单, 你可以参考之前实现的`dentry_search`和`dentry_print`来做, 核心操作都是目录项遍历
 
-## 实验开始前的准备
+`inode_to_path`相对复杂, 它的作用是获取某个inode(目录类型)的绝对路径, 也就是从某个节点开始回溯到树根节点
 
-1. 基础知识: 建议超过课程进度, 尽快学习完OS的基本知识, 不用很深入但是要有了解
+我们知道, 正向查找 (`path_to_inode`) 的理论依据是`dentry_search`操作进行文件名匹配
 
-2. 环境配置: 我们沿用xv6-riscv-2020的实验环境, 以能成功运行xv6-riscv-2020为检验标准
+对应的, 逆向查找 (`inode_to_path`) 的理论依据是之前埋好的`..`目录项, 它对应的inode_num就是上级节点的inode_num
 
-3. 常用工具: vscode + git + markdown
+注意: 由于采用逆向填充方法, 所以缓冲区的使用也是从后往前的, 返回偏移量 (**path + offset**才是绝对路径字符串的起点)
 
-4. 编译纠错: Makefile + gcc + gdb + 程序编译运行基本知识
+下一个需要实现的函数是`path_create_inode`, 它基于目标路径来创建新的inode, 包括inode的申请和目录项的创建等
 
-5. 其他知识: C语言语法(尤其是多文件组织) + qemu简单了解 + risc-v简单了解
+在之前的假设中, 一个inode只对应一个绝对路径, 这可能带来一些不方便:
 
-## 你能获得的帮助
+假设一个你经常使用的文件处于很深的绝对路径中, 打开它就变得麻烦了
 
-1. 助教会为每一次实验搭建框架, 并提供必要的代码 (通常是硬件相关和Makefile)
+为了解决这个问题, 我们引入了硬链接的方法: 一个inode可以对应多个绝对路径 
 
-2. 助教会为每一次实验编写实验指导书和PPT, 介绍实验目标、背景知识、实验思路、测试用例等
+/AAA/BBB/CCC/DDD/hello.txt 对应 inode-23, /link.txt 也对应 inode-23
 
-3. xv6的资料非常多, 代码也是开源的, 你应该多阅读多思考
+实现这一点只需要做两件事: (1) inode-23.nlink++ (2) 在根目录下增加一条dentry {link.txt, 23}
 
-4. 我们会建立一个课程实验的微信群, 有问题可以发到群里, 鼓励大家互帮互助
+对应的, unlink操作也完成两件事: (1) inode.nlink-- (2) 删除一条dentry
 
-## 你需要具备的素养
+它还需要考虑一个问题: inode的资源释放 (当nlink减到0, 意味着用户无法通过路径方法访问这个inode, 需要在磁盘中释放它)
 
-1. 热爱OS并愿意付出相当比例的时间投入这个实验, 混子劝退
+资源释放的判断逻辑, 我们在`inode_put`中已经实现了, 这里不必显式执行`inode_delete`操作
 
-2. 能够独立思考和独立解决问题, 写内核遇到的问题会比普通的实验多得多, 大多数时间只能靠自己
+理解这些部分后, 请你动手实现 `path_link` 与 `path_unlink`
 
-3. 对系统底层原理有好奇心, 不希望只是调用成熟接口, 希望自己动手实现自己调用的函数
+**2.2 补全了dentry.c中的函数后, 我们正式引入文件的抽象**
 
-4. 能够静下心 Code and Debug, 平静面对失败, 永不言弃
+你可能听过一句话: Linux秉持一切皆文件的设计哲学; 下面详细讨论"文件"的定义与实现方法
 
-## 让我们开始：建立仓库
+```c
+typedef struct file {
+    inode_t *ip;        // 对应的inode
+    bool readable;      // 是否可读
+    bool writbale;      // 是否可写
+    uint32 offset;      // 读/写指针的偏移量
+    uint32 ref;         // 引用数 (lk_file_table保护)
+} file_t;
 
-1. 在线上建立代码托管仓库(小白建议使用gitee, 国产的没有网络问题), git clone到本地
+file_t file_table[N_FILE]; // 文件资源池
+spinlock_t lk_file_table; // 保护它的锁
 
-2. 在本地使用Markdown编写README文件, 简单介绍你的项目
+```
 
-3. 练习和熟悉 vscode + git + markdown, 后面需要长期用到
+除了inode指针, 文件还包括读写权限字段、读写指针偏移量字段、引用数字段
+
+其中读写权限字段在文件开始时设置、偏移量字段在文件读写时设置、引用数字段在文件打开关闭复制时设置
+
+值得注意的是, 不同于inode、buffer等全局共享资源; 对于进程来说, 文件提供了一种独占inode资源的假象
+
+文件的读写权限、指针偏移量等, 只有持有这个文件的进程关心, 无需上锁; 而引用数需要全局的lk_file_table保护
+
+我们可以梳理一下file与inode的区别: 
+
+- file是进程私有的、具备动态语义的、字段不做持久化存储的 数据集合管理者
+
+- inode是全局共享的、只有静态语义的、字段进行持久化存储的 数据集合管理者
+
+理解上述概念后, 请你实现一系列文件相关的函数
+
+```c
+// in fs.c
+void file_init(); // 初始化file_table和锁
+file_t* file_alloc(); // 获取空闲file
+file_t* file_open(char *path, uint32 open_mode); // 打开文件(注意打开模式)
+void file_close(file_t *file); // 关闭文件
+uint32 file_read(file_t* file, uint32 len, uint64 dst, bool is_user_dst); // 读取文件
+uint32 file_write(file_t* file, uint32 len, uint64 src, bool is_user_src); // 写入文件
+uint32 file_lseek(file_t *file, uint32 lseek_offset, uint32 lseek_flag); // 读写指针移动
+file_t* file_dup(file_t* file); // 复制文件使用权
+uint32 file_get_stat(file_t* file, uint64 user_dst); // 获取文件状态
+```
+
+在实现这些函数的过程中, 你应该注意到: `file_read` 和 `file_write` 需要用到swich-case做分类处理
+
+file type 与 inode type 是匹配的, 分成: 数据文件(流式)、目录文件（结构化）、设备文件（特殊定义）
+
+**2.3 数据文件和目录文件我们比较熟悉了, 下面重点介绍设备文件的情况**
+
+在我们的设计中, 设备文件的分类只使用主设备号**inode->major**, 次设备号都使用**default**
+
+设备文件的核心特性是支持**读写**操作, 不同于另外两种文件的读写都是在磁盘上进行的
+
+设备文件的读写操作是可以灵活定义的, 我们定义了六种设备文件:
+
+- **/dev/stdin**: 标准输入 (行缓冲), 可读
+
+- **/dev/stdout**: 标准输出, 可写
+
+- **/dev/stderr**: 标准错误输出 (前置输出“ERROR”), 可写
+
+- **/dev/zero**: 零文件 (可以读到任意多的零字节), 可读
+
+- **/dev/null**: 黑洞文件 (读到的字节数永远是0, 写入多少字节都可以), 可读可写
+
+- **/dev/gpt0**: 小彩蛋 (可以回答预设问题的笨蛋版本GPT), 可写
+
+这六种设备文件的读写函数已经给出, 你需要实现下面的功能:
+
+```c
+// in device.c
+void device_init(); // 初始化device_table, 保证各个设备文件/dev/xxx在磁盘中存在
+bool device_open_check(uint16 major, uint32 open_mode); // 检查设备文件是否存在及打开权限的合法性
+uint32 device_read_data(uint16 major, uint32 len, uint64 dst, bool is_user_dst); // 读接口
+uint32 device_write_data(uint16 major, uint32 len, uint64 src, bool is_user_src); // 写接口
+```
+
+注意: `device_init`和`file_init`应该在`fs_init`中被调用
+
+## 第3步: 进程与文件系统 (proc/proc.c)
+
+完成文件系统的补全工作后, 我们进一步讨论进程模块与文件系统模块的协作
+
+首先在进程结构体中增加打开文件表字段`open_file`和当前工作目录字段`cwd`
+
+前者记录当前进程打开的文件指针, 后者记录了当前进程**站在**文件系统树中的哪个位置
+
+我们需要修改哪些地方以支持这两个字段的生命周期呢?
+
+- `proc_init`: 初始化资源(设为NULL)
+
+- `proc_return`: 对于新生的proczero, 手动设置open_file(依次打开stdin stdout stderr)和cwd(设为根目录)
+
+- `proc_fork`: 对于其他进程, 直接继承父进程的open_file和cwd即可(file_dup + inode_dup)
+
+- `proc_free`: 释放资源(设为NULL)
+
+和我们之前说的一样, 你会发现文件的生命周期与进程的生命周期是高度吻合的
+
+支持cwd字段使得相对路径 (如./hello.txt or hello.txt or ../hello.txt) 变得可能 (区别于以`/`开头的绝对路径)
+
+对应的, 请你修改路径解析函数 `__path_to_inode` 以支持基于相对路径搜索inode
+
+## 第4步: 执行ELF文件 (proc/exec.c)
+
+首先思考一下只有fork的OS内核是什么样的?
+
+我们实现了initcode.c, 其他进程通过fork产生, 内容上和proczero没什么区别...
+
+为了实现丰富多彩的用户软件, 只有fork是不够的, 我们还要有执行ELF文件的能力
+
+ELF文件编译链接的最终产物, OS内核读取和解析ELF文件, 在复制品的壳子上构建全新的血肉 (fork + exec)
+
+ELF文件的组织结构通常是: [ELF_header | Programe_header | seg-1 | seg-2 | ... | Section_header]
+
+其中ELF_header描述了全局的情况 (类似Superblock), Programe_header描述了各个segment的情况 (类似inode region)
+
+接下来我们讨论如何实现非常重要的函数`proc_exec`
+
+- step-0: 准备全新的pagetable和trapframe (为了防止中途崩溃, 我们不能直接修改旧的)
+
+- step-1: 解析输入的文件路径, 获取ELF文件的inode
+
+- step-2: 读取ELF_header, 其中**对Programe_header的描述字段**和**ELF程序入口地址**是我们关心的
+
+- step-3: 按照顺序读取需要载入内存的Segment, 填充到用户堆区域 (`prepare_heap`)
+
+- step-4: 释放ELF的inode
+
+- step-5: 处理输入的参数列表**argv**, 填充到用户栈区域 (`prepare_stack`)
+
+- step-6: 新的地址空间构建完毕, 可以释放旧的资源了
+
+- step-7: 设置trapframe的相关字段: 返回用户态的参数1(argc)、参数2(argv)、PC指针、SP指针
+
+- step-8: 更新进程的相关字段: 页表、trapframe、heap_top、ustack_npage、mmap、name
+
+助教将比较麻烦的`load_segment` `prepare_heap` `prepare_stack` 剥离出来并实现了, 你只需完成主线任务
+
+这个函数的复杂性大概是OS内核中最高的, 横跨进程、内存、文件系统三大核心模块, 需要你非常细心并充分理解每个步骤
+
+## 第5步: 增加系统调用 (syscall)
+
+为了便于在用户态进行系统测试, 你需要先实现一些新的系统调用, 主要是文件系统相关的 (9-22)
+
+这是最新的系统调用表, 你需要参考它修改**syscall.c**与**sysfunc.c**中的缺漏
+
+更多输入输出细节请参考**sysfunc.c**中各个系统调用函数的注释
+
+```c
+#define SYS_brk 1               // 调整堆边界
+#define SYS_mmap 2              // 创建内存映射
+#define SYS_munmap 3            // 解除内存映射
+#define SYS_fork 4              // 进程复制
+#define SYS_wait 5              // 等待子进程退出
+#define SYS_exit 6              // 进程退出
+#define SYS_sleep 7             // 进程睡眠一段时间
+#define SYS_getpid 8            // 获取当前进程的ID
+#define SYS_exec 9              // 执行ELF文件
+#define SYS_open 10             // 打开文件
+#define SYS_close 11            // 关闭文件
+#define SYS_read 12             // 读取文件
+#define SYS_write 13            // 写入文件
+#define SYS_lseek 14            // 移动读写指针
+#define SYS_dup 15              // 复制文件权限
+#define SYS_fstat 16            // 获取文件状态信息
+#define SYS_get_dentries 17     // 获取目录下所有有效目录项
+#define SYS_mkdir 18            // 创建目录文件
+#define SYS_chdir 19            // 切换工作目录
+#define SYS_print_cwd 20        // 打印工作目录的绝对路径
+#define SYS_link 21             // 建立硬链接
+#define SYS_unlink 22           // 解除硬链接
+```
+
+## 测试用例
+
+实现`proc_exec`对系统调用的测试有很大帮助, 现在的测试流程是:
+
+**initcode.c -> (fork + exec + wait) -> test_1 or test_2 or test_3 ...**
+
+你只需要修改`initcode.c`中的**path**和**argv**参数即可启动不同的测试点
+
+助教准备了4个测试用例 (在`src/user`目录中), 请你依次执行, 理想结果见`picture/`目录
+
+**尾声**
+
+**历经9次实验, 我们终于完成了这个小型操作系统内核的全部工作, 祝贺!**
+
+它的代码量大约5500行, 由内核态程序、用户态程序、文件系统初始化程序、链接脚本四部分构成
+
+**我们先来回顾一下9次实验的内容:**
+
+- lab 1: 机器启动  
+- lab 2: 内存管理初步  
+- lab 3: 中断异常初步  
+- lab 4: 第一个用户态进程的诞生
+- lab 5: 系统调用流程建立+用户态虚拟内存管理
+- lab 6: 从单进程走向多进程--进程调度与生命周期
+- lab 7: 文件系统 之 磁盘管理  
+- lab 8: 文件系统 之 数据组织与层次结构  
+- lab 9: 文件系统 之 文件管理与全系统整合  
+
+**这9次实验大致可以划分成3个阶段:**
+
+- lab 1-3: 构建OS内核的基础设施, 例如串口、自旋锁、物理页、页表、中断异常等  
+- lab 4-6: 按照“从一到多,从弱到强”的顺序构建进程模块, 并与内存模块、陷阱模块深度绑定  
+- lab 7-9: 引入持久化存储概念, 自底向上构建文件系统模块, 并与进程模块深度绑定  
+
+助教希望能帮你梳理系统构建的底层逻辑, 并带领你一步步来做; 但是受限于能力和精力, 难免有所缺漏, 请多包涵
+
+经过这样的动手过程, 相信你对小型OS内核已经建立起了基本概念; 请记住, **这是起点而非终点**
+
+**如果你想进一步完善和改进这个基础版本的OS内核, 我们提供了一些方向:**
+
+- **内存管理**: (1) 实现更完善的缺页异常和写时拷贝机制; (2) 实现伙伴系统分配器
+- **进程管理**: (1) 实现多级反馈调度算法来替换现有的轮询式调度; (2) 实现内核态线程机制
+- **文件系统**: (1) 修改现有的mmap机制, 实现文件映射能力; (2) 实现基于FAT的文件系统, 构建VFS层
+- **用户程序**: (1) 实现一个好用的shell程序; (2) 补充更多实用程序(如ls、cd、cat等)
+- **硬件适配**: (1) 从仿真的QEMU移植到物理的开发板; (2) 支持更多体系结构（如x86、ARM、LoongArch等）
+
+**这个你亲手完成的小型OS内核, 将成为操作系统研究道路上的第一块砖, 支撑你走得更远!**
