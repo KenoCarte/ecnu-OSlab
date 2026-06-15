@@ -1,1 +1,21 @@
-target
+target/*
+# 目标文件
+build/*
+# 构建文件
+*.o
+*.d
+# 目标文件
+*.elf
+*.bin
+# 可执行文件
+*.map
+# 链接文件
+*.log
+# 日志文件
+*.dmp
+# 转储文件
+*.swp
+# Vim交换文件
+LICENSE
+README.md
+# 许可证和自述文件
