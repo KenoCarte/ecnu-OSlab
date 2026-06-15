@@ -68,7 +68,7 @@ void printf(const char* fmt, ...) {
             printint(va_arg(args, int), 10, 1);
             break;
         case 'p':
-            printint(va_arg(args, uint32), 16, 1);
+            printint(va_arg(args, uint32), 16, 0);
             break;
         case 'x':
             printptr(va_arg(args, uint64));

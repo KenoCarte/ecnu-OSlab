@@ -17,5 +17,7 @@ build/*
 *.swp
 # Vim交换文件
 LICENSE
-README.md
-# 许可证和自述文件
+.gitignore
+# Git忽略文件
+.vscode/*
+# VSCode配置文件

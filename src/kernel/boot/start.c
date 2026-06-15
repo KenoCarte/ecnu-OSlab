@@ -24,5 +24,10 @@ void start() {
     // 设置M-mode的返回地址
     w_mepc((uint64)main);
     // 触发状态迁移，回到上一个状态（M-mode->S-mode）
+    w_medeleg(0xffff);
+    w_mideleg(0xffff);
+    w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
+    w_pmpaddr0(0x3fffffffffffffull);
+    w_pmpcfg0(0xf);
     asm volatile("mret");
 }
