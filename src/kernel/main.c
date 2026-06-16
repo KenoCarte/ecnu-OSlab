@@ -18,11 +18,12 @@ int main() {
         __sync_synchronize();
         is_started = 1;
         uint64 last = 0;
-        while(1) {
+        while (1) {
             uint64 now = timer_get_ticks();
             if (now != last) {
-                printf("cpu %d:di da\n", cpuid);
                 last = now;
+                if (now % 10 == 0)
+                    printf("cpu %d:di da\n", cpuid);
             }
         }
     }
@@ -31,11 +32,12 @@ int main() {
         __sync_synchronize();
         printf("cpu %d is booting!\n", cpuid);
         uint64 last = 0;
-        while(1) {
+        while (1) {
             uint64 now = timer_get_ticks();
             if (now != last) {
-                printf("cpu %d:di da\n", cpuid);
                 last = now;
+                if (now % 10 == 0)
+                    printf("cpu %d:di da\n", cpuid);
             }
         }
     }
