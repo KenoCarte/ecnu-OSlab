@@ -30,12 +30,12 @@ pte_t* vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc) {
 // 检查: va pa 应当是 page-aligned, len(字节数) > 0, va + len <= VA_MAX
 // 注意: perm 应该如何使用
 void vm_mappages(pgtbl_t pgtbl, uint64 va, uint64 pa, uint64 len, int perm) {
-    if (va % PGSIZE || pa % PGSIZE || len == 0 || va + len > VA_MAX)
+    if (va % PGSIZE || pa % PGSIZE || len <= 0 || va + len > VA_MAX)
         panic("vm_mappages: invalid va, pa or len");
     for (uint64 offset = 0; offset < len; offset += PGSIZE) {
         pte_t* pte = vm_getpte(pgtbl, va + offset, true);
         assert(pte != NULL, "vm_mappages: vm_getpte failed");
-        assert(!(*pte & PTE_V), "vm_mappages: remap");
+        assert(!(*pte & perm), "vm_mappages: remap");
         *pte = PA_TO_PTE(pa + offset) | perm | PTE_V;
     }
 }
@@ -43,14 +43,14 @@ void vm_mappages(pgtbl_t pgtbl, uint64 va, uint64 pa, uint64 len, int perm) {
 // 解除pgtbl中[va, va+len)区域的映射
 // 如果freeit == true则释放对应物理页, 默认是用户的物理页
 void vm_unmappages(pgtbl_t pgtbl, uint64 va, uint64 len, bool freeit) {
-    if (va % PGSIZE || len == 0 || va + len > VA_MAX)
-        panic("vm_mappages: invalid va or len");
+    if (va % PGSIZE || len <= 0 || va + len > VA_MAX)
+        panic("vm_unmappages: invalid va or len");
     for (uint64 offset = 0; offset < len; offset += PGSIZE) {
         pte_t* pte = vm_getpte(pgtbl, va + offset, false);
-        assert(pte != NULL && (*pte & PTE_V), "vm_unm appages: pte not exist");
+        assert(pte != NULL && (*pte & PTE_V), "vm_unmappages: pte not exist");
         if (freeit) {
             uint64 pa = PTE_TO_PA(*pte);
-            pmem_free(pa, true);
+            pmem_free(pa, false);
         }
         *pte = 0;
     }

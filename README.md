@@ -1,501 +1,224 @@
-# LAB-2: 内存管理初步
+# Lab-2: 内存管理初步
 
-**前言**
+## 实验目标
 
-在lab-1中, 我们学习了机器启动流程、UART设备驱动、格式化输出和自旋锁
+实现物理内存管理（空闲链表）和 SV39 内核态虚拟内存（三级页表），为后续进程管理打下内存基础。
 
-完成lab-1后, OS内核已经可以进入main函数并掌控UART资源做一些输出了
-
-在lab-2中, 我们要开始认识和管理“程序除了CPU外最常访问的共享资源——内存”
-
-内存管理的实现不是一步到位的, lab-2主要关注物理内存和内核态虚拟内存, 剩余部分将在后面的实验逐渐完善
-
-## 代码组织结构
-```
-ECNU-OSLAB-2025-TASK
-├── LICENSE        开源协议
-├── .vscode        配置了可视化调试环境
-├── registers.xml  配置了可视化调试环境
-├── common.mk      Makefile中一些工具链的定义
-├── Makefile       编译运行整个项目 (CHANGE, 增加trap和mem目录作为target)
-├── kernel.ld      定义了内核程序在链接时的布局 (CHANGE, 增加一些关键位置的标记)
-├── pictures       README使用的图片目录 (CHANGE, 日常更新)
-├── README.md      实验指导书 (CHANGE, 日常更新)
-└── src            源码
-    └── kernel     内核源码
-        ├── arch   RISC-V相关
-        │   ├── method.h
-        │   ├── mod.h
-        │   └── type.h
-        ├── boot   机器启动
-        │   ├── entry.S
-        │   └── start.c
-        ├── lock   锁机制
-        │   ├── spinlock.c
-        │   ├── method.h
-        │   ├── mod.h
-        │   └── type.h
-        ├── lib    常用库
-        │   ├── cpu.c
-        │   ├── print.c
-        │   ├── uart.c
-        │   ├── utils.c (NEW, 工具函数)
-        │   ├── method.h (CHANGE, utils.c的函数声明)
-        │   ├── mod.h
-        │   └── type.h
-        ├── mem    内存模块
-        │   ├── pmem.c (TODO, 物理内存管理)
-        │   ├── kvm.c (TODO, 内核态虚拟内存管理)
-        │   ├── method.h (NEW)
-        │   ├── mod.h (NEW)
-        │   └── type.h (NEW)
-        ├── trap   陷阱模块
-        │   ├── method.h (NEW)
-        │   ├── mod.h (NEW)
-        │   └── type.h (NEW, 增加CLINT和PLIC寄存器定义)
-        └── main.c (TODO)
-```
-**标记说明**
-
-**NEW**: 新增源文件, 直接拷贝即可, 无需修改
-
-**CHANGE**: 旧的源文件发生了更新, 直接拷贝即可, 无需修改
-
-**TODO**: 你需要实现新功能 / 你需要完善旧功能
-
-## 第一阶段: 物理内存
-
-首先需要关注的文件是 **kernel.ld** 文件, 它规定了内核文件 **kernel-qemu.elf** 在载入内存时的布局
-
-物理内存按照地址空间划分为三个部分：
-
-- **0x80000000 ~ KERNEL_DATA** 存放了 **kernel-qemu.elf的代码**
-
-- **KERNEL_DATA ~ ALLOC_BEGIN** 存放了 **kernel-qemu.elf的数据**
-
-- **ALLOC_BEGIN ~ ALLOC_END** 属于 **未使用的可分配的物理页**
-
-如果你想深入了解可执行文件(ELF)的布局信息, 可以自行查阅资料, 在lab-9中我们会再提
-
-前两个区域的物理页会一直被内核占用, 不会纳入动态分配和回收的范围, 需要管理的只有第三个区域的物理页
-
-首先介绍物理内存管理的基本原理: **4KB物理页切分 + 空闲链表组织**
-
-**ALLOC_BEGIN ~ ALLOC_END** 这块物理空间被切分为N个4KB物理页(不会有剩余)
-
-此外, 考虑到内核与用户空间的强制隔离, 我们设置了两个`alloc_region`, 基于**KENREL_PAGE**进行边界划分
-
-`kernel_region` 记录了内核空间的空闲物理页情况, `user_region` 记录了用户空间的空闲物理页情况
-
-`alloc_region` 描述了一组空闲页链表, 包括起止位置、空闲页面数量、链表头节点、保证一致性的锁
-
-下面的图片显示了物理页的申请和释放在链表上是如何体现的
-
-![pic](./pictures/01.png)
-
-接下来讨论物理内存管理的函数实现:
+## 内存布局
 
 ```
-void pmem_init();    // 初始化系统, 只调用一次
-void* pmem_alloc();  // 申请一个空闲的物理页
-void pmem_free();    // 释放一个之前申请的物理页
+0x80000000 ─── KERNEL_DATA ─── ALLOC_BEGIN ─────────────────── ALLOC_END
+    [内核代码]     [内核数据]      [      可分配物理页区域          ]
+                                 前 1024 页 = kern_region
+                                 剩余      = user_region
 ```
 
-这三个函数体现了经典的共享资源管理方法：初始化共享资源, 占有共享资源, 释放共享资源
+所有符号（KERNEL_DATA、ALLOC_BEGIN、ALLOC_END）由 kernel.ld 的 PROVIDE 提供，代码通过 `extern char[]` 引用。
 
-在**kernel/lib/utils.c**里我们新增了三个辅助函数, 能简化一些操作
+## 第一阶段：物理内存管理 (pmem.c)
 
-为了保证资源共享的可靠性, 当尝试访问`alloc_region`时需要获取和释放自旋锁
+### 核心数据结构
 
-## 第一阶段: 测试用例
+空闲页通过**单链表**串联。链表节点 `page_node_t` 直接复用空闲页的前 8 字节——页在链表上时存 next 指针，分配出去后那 8 字节就当普通内存用。`alloc_region_t` 描述一个分配区域：起止地址、自旋锁、空闲计数、链表头。
 
-**test-1**
+链表的头插入策略意味着分配和释放都是 O(1)，但分配出去的页不保证地址顺序。
 
-```c
-volatile static int started = 0;
+### 三个函数
 
-volatile static int over_1 = 0, over_2 = 0;
+**`pmem_init()`**：取 ALLOC_BEGIN/ALLOC_END 等符号地址，算出 kern_region 和 user_region 的起止。前 KERN_PAGES(1024) 页给内核区域，剩余给用户区域。遍历每个区域的每一页，以头插法建好空闲链表。
 
-static int* mem[1024];
+**`pmem_alloc(in_kernel)`**：根据 in_kernel 选区域，加锁，从链表头取下一页，allocable 减一，解锁，memset 清零后返回。链表为空或计数归零时 panic。
 
-int main()
-{
-    int cpuid = r_tp();
+**`pmem_free(page, in_kernel)`**：选区域，加锁，范围校验（`page < begin || page > end`），把 page 当 page_node_t 头插入链表，allocable 加一，解锁。
 
-    if(cpuid == 0) {
+### 踩坑
 
-        print_init();
-        pmem_init();
+- kernel.ld 提供的 ALLOC_END = 0x88000000 刚好是 QEMU 配的 128MB 内存边界。pmem_init 的循环如果用 `<= end`，会尝试写地址 0x88000000（越界），QEMU 直接 access fault。改用 `< end` 解决。
 
-        printf("cpu %d is booting!\n", cpuid);
-        __sync_synchronize();
-        started = 1;
+## 第二阶段：SV39 虚拟内存 (kvm.c)
 
-        for(int i = 0; i < 512; i++) {
-            mem[i] = pmem_alloc(true);
-            memset(mem[i], 1, PGSIZE);
-            printf("mem = %p, data = %d\n", mem[i], mem[i][0]);
-        }
-        printf("cpu %d alloc over\n", cpuid);
-        over_1 = 1;
-        
-        while(over_1 == 0 || over_2 == 0);
-        
-        for(int i = 0; i < 512; i++)
-            pmem_free((uint64)mem[i], true);
-        printf("cpu %d free over\n", cpuid);
+### SV39 三级页表
 
-    } else {
-
-        while(started == 0);
-        __sync_synchronize();
-        printf("cpu %d is booting!\n", cpuid);
-        
-        for(int i = 512; i < 1024; i++) {
-            mem[i] = pmem_alloc(true);
-            memset(mem[i], 1, PGSIZE);
-            printf("mem = %p, data = %d\n", mem[i], mem[i][0]);
-        }
-        printf("cpu %d alloc over\n", cpuid);
-        over_2 = 1;
-
-        while(over_1 == 0 || over_2 == 0);
-
-        for(int i = 512; i < 1024; i++)
-            pmem_free((uint64)mem[i], true);
-        printf("cpu %d free over\n", cpuid);        
- 
-    }
-    while (1);    
-}
+```
+虚拟地址 (39 bits)
+┌──────────┬──────────┬──────────┬────────────┐
+│  VPN[2]  │  VPN[1]  │  VPN[0]  │   offset   │
+│  9 bits  │  9 bits  │  9 bits  │  12 bits   │
+└────┬─────┴────┬─────┴────┬─────┴──────┬─────┘
+     │          │          │            │
+     ▼          ▼          ▼            ▼
+  L2 页表 ──→ L1 页表 ──→ L0 页表 ──→ 物理页 (4KB)
+  (顶级)      (次级)      (低级)         数据
 ```
 
-这个测试用例的作用是：
+每级页表 512 项 × 8 字节 = 4KB，刚好一页。虚拟地址最大 512GB（2^39），但实际只用低 38 bits（VA_MAX）。
 
-1. cpu-0和cpu-1并行申请内核空间的全部物理内存, 赋值并输出信息
+### 页表项 (PTE)
 
-2. 待申请全部结束, 并行释放所有申请的物理内存
-
-理想的输出结果可能是这样的：
-
-![pic](./pictures/03.png)
-
-**test-2**
-
-```c
-/*--------------------------------- 测试代码 ----------------------------------*/
-
-// 测试目标：耗尽内核/用户区域内存 
-void test_case_1()
-{
-    void *page = NULL;
-
-    while (1)
-    {
-        page = pmem_alloc(true);
-        // page = pmem_alloc(false);
-    }
-}
-
-#define TEST_CNT 10
-
-// 测试目标: 常规申请和释放操作
-void test_case_2()
-{
-    alloc_region_t *user_ar = &user_region;
-    uint64 user_pages[TEST_CNT];
-
-    for (int i = 0; i < TEST_CNT; i++)
-        user_pages[i] = 0;
-
-    printf("=== test_case_2: Phase 1 - Allocate User Pages ===\n");
-    for (int i = 0; i < TEST_CNT; i++)
-    {
-        user_pages[i] = (uint64)pmem_alloc(false);
-
-        printf("Allocated user page[%d] @ %p\n", i, (void *)user_pages[i]);
-
-        if (!(user_pages[i] >= user_ar->begin && user_pages[i] < user_ar->end))
-        {
-            printf("Assertion failed: Page address out of bounds! Page: %p, Region: [%p, %p)\n",
-                   (void *)user_pages[i], (void *)user_ar->begin, (void *)user_ar->end);
-            panic("Page address out of user region bounds");
-        }
-
-        memset((void *)user_pages[i], 0xAA, PGSIZE);
-    }
-
-    printf("=== test_case_2: Phase 2 - Pre-free Check ===\n");
-    spinlock_acquire(&user_ar->lk);
-    int expected_before = (user_ar->end - user_ar->begin) / PGSIZE - TEST_CNT;
-    int actual = user_ar->allocable;
-    printf("Expected allocable: %d, Actual: %d\n", expected_before, actual);
-    assert(user_ar->allocable == expected_before, "Allocable count incorrect before free");
-    spinlock_release(&user_ar->lk);
-
-    printf("=== test_case_2: Phase 3 - Free Pages ===\n");
-    for (int i = 0; i < TEST_CNT; i++)
-    {
-        pmem_free(user_pages[i], false);
-        printf("Free user page[%d] @ %p\n", i, (void *)user_pages[i]);
-    }
-
-    printf("=== test_case_2: Phase 4 - Post-free Check ===\n");
-    spinlock_acquire(&user_ar->lk);
-    int expected_after = (user_ar->end - user_ar->begin) / PGSIZE;
-    actual = user_ar->allocable;
-    printf("Expected allocable: %d, Actual: %d\n", expected_after, actual);
-    assert(user_ar->allocable == expected_after, "Allocable count not restored after free");
-    if (user_ar->list_head.next != NULL)
-        printf("Free list head @ %p\n", user_ar->list_head.next);
-    else
-        panic("Free list is empty after freeing pages");
-    spinlock_release(&user_ar->lk);
-
-    printf("=== test_case_2: Phase 5 - Reallocate & Verify Zero ===\n");
-    for (int i = 0; i < TEST_CNT; i++)
-    {
-        void *page = pmem_alloc(false);
-        printf("Reallocated page[%d] @ %p\n", i, page);
-
-        bool non_zero = false;
-        for (int j = 0; j < PGSIZE / sizeof(int); j++)
-        {
-            if (((int *)page)[j] != 0)
-            {
-                non_zero = true;
-                printf("Non-zero value detected at offset %d: 0x%x\n", j, ((int *)page)[j]);
-                break;
-            }
-        }
-        assert(!non_zero, "Memory not zeroed after free");
-        printf("Zero verification passed\n");
-    }
-
-    printf("test_case_2 passed!\n");
-}
+```
+┌───────────┬──────────────────────────────┬────────────┐
+│ reserved  │            PPN               │   flags    │
+│  10 bits  │          44 bits             │  10 bits   │
+└───────────┴──────────────────────────────┴────────────┘
 ```
 
-这个测试用例的作用是：
+关键 flags: `V`(0), `R`(1), `W`(2), `X`(3), `U`(4)
 
-1. 测试内存耗尽的`panic`是否正常触发
+指向**下一级页表**的 PTE 必须满足 `PTE_CHECK`（R=W=X=0），硬件以此来区分"这是页表页还是数据页"。PTE 中不存 R/W/X 不影响 CPU 遍历页表，只影响直接用该页做数据访问。
 
-2. 测试用户空间物理页申请和释放的正确性
+PA ↔ PTE 转换：`PA_TO_PTE(pa) = (pa >> 12) << 10`，`PTE_TO_PA(pte) = (pte >> 10) << 12`。
 
-## 第二阶段: 内核态虚拟内存
+### 实现
 
-完成物理内存管理的部分后, 你应该注意到“内存”和“串口”这两种共享资源的区别:
+**`vm_getpte(pgtbl, va, alloc)`**：三级循环（idx=2,1,0），每级用 `VA_TO_VPN` 取索引，读 PTE。如果 PTE.V=0 且 alloc=true，调 pmem_alloc 申请新物理页当次级页表，写入 PTE（只设 PTE_V，不设 RWX）。每级下钻前 assert PTE_CHECK。idx=0 时返回指向低级页表项的指针。
 
-**串口资源是没有区别的, 而内存资源被细分为很多个通过"地址"来区分的4KB物理页**
+**`vm_mappages(pgtbl, va, pa, len, perm)`**：用 offset 遍历 `[0, len)`，步长 PGSIZE。每次调 vm_getpte 拿到 PTE 指针，assert `!(*pte & perm)` 防止重映射冲突，然后写入 `PA_TO_PTE(pa+offset) | perm | PTE_V`。offset 方式避免了 len 非页对齐时 uint64 下溢。
 
-- 因此, 我们需要一种机制来记录每个程序获得了哪些4KB物理页面
+**`vm_unmappages(pgtbl, va, len, freeit)`**：同样 offset 遍历。vm_getpte 找到 PTE，assert 存在且 V 位有效。freeit=true 时先 pmem_free 释放物理页（传 false 走用户区域），再清 PTE。
 
-- 此外, 考虑到内存编程模型的灵活性和通用性, 我们需要给各个应用程序提供“独占内存资源”的幻觉
+### 内核页表初始化 (kvm_init)
 
-为了实现这两个目的, 我们引入**虚拟内存**这一重要概念
+`kvm_init` 将硬件寄存器区域和内核全部内存做直接映射（va = pa），分三块设不同权限：
 
-简单来说, 我们要建立一个表格, 用于记录虚拟地址空间到物理地址空间的对应关系, 并通过MMU自动完成翻译
+| 区域 | 映射范围 | 权限 |
+|------|---------|------|
+| UART MMIO | 0x10000000, 4KB | R+W |
+| CLINT | 0x02000000, 64KB (16页) | R+W |
+| PLIC | 0x0c000000, 4MB (1024页) | R+W |
+| 内核代码段 | KERNEL_BASE → KERNEL_DATA | R+X |
+| 内核数据段 | KERNEL_DATA → ALLOC_BEGIN | R+W |
+| 可分配区 | ALLOC_BEGIN → ALLOC_END | R+W |
 
-**kernel/mem/type.h** 中的注释介绍了虚拟内存的一种规范**SV39**, 即39 bit虚拟地址的虚拟内存
+代码段不设 W（防止意外改写指令），数据段不设 X（防止 jump 到数据区）。
 
-之所以要遵守这个规范, 是为了能在RISC-V体系结构的机器上正常使用MMU,  你可以查看手册获得更多信息
+`kvm_inithart()` 已由骨架提供：`w_satp(MAKE_SATP(kernel_pgtbl))` 后 `sfence_vma()` 刷新 TLB。
 
-虚拟内存的构建围绕两个核心概念：**页表项(PTE)** 和 **页表(pgtbl)**
+### 踩坑
 
-页表是由页表项构成的, 你可以理解成数组和数组里元素的关系
+- 测试程序会先映射 PTE_R 再重映射 PTE_W，因此 assert 不能写 `!(*pte & PTE_V)`（那会阻止所有重映射）。当前用 `!(*pte & perm)`，检查新权限和现有权限不重叠。
 
-一个页表项对应一个物理页, 页表项主要由两部分组成：
+## 测试结果
 
-- 它所管理的物理页的**页号** (PPN字段)
+### pmem测试
 
-- 它所管理的物理页的**标志位** (低10bit)
+#### 测试一
 
-**提示:** 页表本身也是存放在物理页中, 这种物理页的特点是PTE的标志位中`PTE_R PTE_W PTE_X`都是0
-
-听起来很不可思议, 这个物理页不能读不能写不能执行? 其实这只是RISC-V的规定, 不必深究
-
-下面的图片显示了页表的示意图和实际状态:
-
-![pic](./pictures/02.png)
-
-页表(比如`kernel_pgtbl`)刚刚初始化是只是一个被清空的4KB物理页
-
-随着`mmap`操作的增加, 页表开始伸展出去, 直至完全长成一个能管理512GB内存空间的树
-
-关于页表的三级组织结构:
-
-- 能从**顶级页表**的PTE里获得**次级页表**所在的物理页的物理页号和标志位
-
-- 能从**次级页表**的PTE里获得**低级页表**所在的物理页的物理页号和标志位
-
-- 能从**低级页表**的PTE里获得**一般物理页**(真正存储数据和代码)的物理页号和标志位
-
-到此为止, 你应该对页表和页表项建立起基本的认识了: 页表是存储分级页表项的树形结构
-
-介绍完背景之后简单说明你需要做的事情, **kvm.c**中的函数推荐按照以下顺序去实现
-
-`vm_getpte -> vm_mappages -> vm_unmappages`
-
-**提示:** 实现过程中可以使用 **kernel/mem/type.h** 中的宏定义
-
-**核心:** 理解页表的构成(页表项与三级映射)和页表操作(映射与解映射)
-
-我们提供了一个`vm_print`函数, 它可以输出页表中所有有用信息, 可以用于Debug
-
-完成基本的页表操作函数后, 我们需要给内核页表 **kernel_pgtbl**设置映射关系并为每个CPU启用它
-
-`kvm_init -> kvm_inithart`
-
-**kernel_pgtbl** 的映射大致可以划分成两部分:
-
-- 硬件寄存器区域, 这部分地址空间不能分配回收只能读写, 可以理解为QEMU保留的"假地址"
-
-- 可用内存区域, 即0x80000000 到 0x80000000 + 128 MB
-
-内核页表对这两部分的映射都是**虚拟地址等于物理地址**的直接映射, 未来的用户页表则不同
-
-映射完毕后我们的**kernel_pgtbl**就可以上线工作了, 把它写入**satp**寄存器正式开启**MMU**翻译
-
-我们终于结束了直接访问物理地址(`w_satp(0)`)的时代 (虽然目前物理地址恰好等于虚拟地址)
-
-之后的内存访问本质都是访问虚拟地址, 虚拟地址经过页表和MMU的协作, 被自动翻译为物理地址
-
-## 第二阶段: 测试用例
-
-**test-1**
-
-```c
-int main()
-{
-    int cpuid = r_tp();
-
-    if(cpuid == 0) {
-
-        print_init();
-        pmem_init();
-        kvm_init();
-        kvm_inithart();
-
-        printf("cpu %d is booting!\n", cpuid);
-        __sync_synchronize();
-        // started = 1;
-
-        pgtbl_t test_pgtbl = pmem_alloc(true);
-        uint64 mem[5];
-        for(int i = 0; i < 5; i++)
-            mem[i] = (uint64)pmem_alloc(false);
-
-        printf("\ntest-1\n\n");    
-        vm_mappages(test_pgtbl, 0, mem[0], PGSIZE, PTE_R);
-        vm_mappages(test_pgtbl, PGSIZE * 10, mem[1], PGSIZE / 2, PTE_R | PTE_W);
-        vm_mappages(test_pgtbl, PGSIZE * 512, mem[2], PGSIZE - 1, PTE_R | PTE_X);
-        vm_mappages(test_pgtbl, PGSIZE * 512 * 512, mem[2], PGSIZE, PTE_R | PTE_X);
-        vm_mappages(test_pgtbl, VA_MAX - PGSIZE, mem[4], PGSIZE, PTE_W);
-        vm_print(test_pgtbl);
-
-        printf("\ntest-2\n\n");    
-        vm_mappages(test_pgtbl, 0, mem[0], PGSIZE, PTE_W);
-        vm_unmappages(test_pgtbl, PGSIZE * 10, PGSIZE, true);
-        vm_unmappages(test_pgtbl, PGSIZE * 512, PGSIZE, true);
-        vm_print(test_pgtbl);
-
-    } else {
-
-        while(started == 0);
-        __sync_synchronize();
-        printf("cpu %d is booting!\n", cpuid);
-         
-    }
-    while (1);    
-}
+```
+cpu 0 is booting!
+panic! pmem_alloc: no more user page
 ```
 
-这个测试用例测试了两件事情:
+#### 测试二
 
-1. 使用内核页表后你的OS内核是否还能正常执行
-
-2. 使用映射和解映射操作修改你的页表, 使用vm_print输出它被修改前后的对比
-
-理想结果如下:
-
-![alt text](./pictures/04.png)
-
-**test-2**
-
-```c
-/*---------------------------------- 测试代码 --------------------------------*/
-
-void test_mapping_and_unmapping()
-{
-    // 1. 初始化测试页表
-    pte_t* pte;
-    pgtbl_t pgtbl = (pgtbl_t)pmem_alloc(true);
-    memset(pgtbl, 0, PGSIZE);
-
-    // 2. 准备测试条件
-    uint64 va_1 = 0x100000;
-    uint64 va_2 = 0x8000;
-    uint64 pa_1 = (uint64)pmem_alloc(false);
-    uint64 pa_2 = (uint64)pmem_alloc(false);
-
-    // 3. 建立映射
-    vm_mappages(pgtbl, va_1, pa_1, PGSIZE, PTE_R | PTE_W);
-    vm_mappages(pgtbl, va_2, pa_2, PGSIZE, PTE_R);
-
-    // 4. 验证映射结果
-    pte = vm_getpte(pgtbl, va_1, false);
-    assert(pte != NULL, "test_mapping_and_unmapping: pte_1 not found");
-    assert((*pte & PTE_V) != 0, "test_mapping_and_unmapping: pte_1 not valid");
-    assert(PTE_TO_PA(*pte) == pa_1, "test_mapping_and_unmapping: pa_1 mismatch");
-    assert((*pte & (PTE_R | PTE_W)) == (PTE_R | PTE_W), "test_mapping_and_unmapping: flag_1 mismatch");
-
-    pte = vm_getpte(pgtbl, va_2, false);
-    assert(pte != NULL, "test_mapping_and_unmapping: pte_2 not found");
-    assert((*pte & PTE_V) != 0, "test_mapping_and_unmapping: pte_2 not valid");
-    assert(PTE_TO_PA(*pte) == pa_2, "test_mapping_and_unmapping: pa_2 mismatch");
-    assert((*pte & PTE_R == PTE_R), "test_mapping_and_unmapping: flag_2 mismatch");
-
-    // 5. 解除映射
-    vm_unmappages(pgtbl, va_1, PGSIZE, true);
-    vm_unmappages(pgtbl, va_2, PGSIZE, true);
-
-    // 6. 验证解除映射结果
-    pte = vm_getpte(pgtbl, va_1, false);
-    assert(pte != NULL, "test_mapping_and_unmapping: pte_1 not found");
-    assert((*pte & PTE_V) == 0, "test_mapping_and_unmapping: pte_1 still valid");
-    pte = vm_getpte(pgtbl, va_2, false);
-    assert(pte != NULL, "test_mapping_and_unmapping: pte_2 not found");
-    assert((*pte & PTE_V) == 0, "test_mapping_and_unmapping: pte_2 still valid");
-
-    // 7. 由于页表的释放函数还没实现, 作为测试用例可以展示不释放页表空间
-
-    printf("test_mapping_and_unmapping passed!\n");
-}
+```
+cpu 0 is booting!
+=== test_case_2: Phase 1 - Allocate User Pages ===
+Allocated user page[0] @ 87fff000
+Allocated user page[1] @ 87ffe000
+Allocated user page[2] @ 87ffd000
+Allocated user page[3] @ 87ffc000
+Allocated user page[4] @ 87ffb000
+Allocated user page[5] @ 87ffa000
+Allocated user page[6] @ 87ff9000
+Allocated user page[7] @ 87ff8000
+Allocated user page[8] @ 87ff7000
+Allocated user page[9] @ 87ff6000
+=== test_case_2: Phase 2 - Pre-free Check ===
+Expected allocable: 31729, Actual: 31729
+=== test_case_2: Phase 3 - Free Pages ===
+Free user page[0] @ 87fff000
+Free user page[1] @ 87ffe000
+Free user page[2] @ 87ffd000
+Free user page[3] @ 87ffc000
+Free user page[4] @ 87ffb000
+Free user page[5] @ 87ffa000
+Free user page[6] @ 87ff9000
+Free user page[7] @ 87ff8000
+Free user page[8] @ 87ff7000
+Free user page[9] @ 87ff6000
+=== test_case_2: Phase 4 - Post-free Check ===
+Expected allocable: 31739, Actual: 31739
+Free list head @ 87ff6000
+=== test_case_2: Phase 5 - Reallocate & Verify Zero ===
+Reallocated page[0] @ 87ff6000
+Zero verification passed
+Reallocated page[1] @ 87ff7000
+Zero verification passed
+Reallocated page[2] @ 87ff8000
+Zero verification passed
+Reallocated page[3] @ 87ff9000
+Zero verification passed
+Reallocated page[4] @ 87ffa000
+Zero verification passed
+Reallocated page[5] @ 87ffb000
+Zero verification passed
+Reallocated page[6] @ 87ffc000
+Zero verification passed
+Reallocated page[7] @ 87ffd000
+Zero verification passed
+Reallocated page[8] @ 87ffe000
+Zero verification passed
+Reallocated page[9] @ 87fff000
+Zero verification passed
+test_case_2 passed!
 ```
 
-这个测试用例主要关注映射和解映射是否正确执行
+### kvm 测试
 
-理想输出如下图所示:
+#### 测试一
 
-![pic](./pictures/05.png)
+```
+cpu 0 is booting!
 
-**补充更多测试用例**
+test-1
 
-因为你未来会依赖现在写的这些函数, 如果现在没发现隐藏的错误, 未来的Debug会更困难
+level-2 pgtbl: pa = 803bd000
+.. level-1 pgtbl 0: pa = 803bc000
+.. .. level-0 pgtbl 0: pa = 803bb000
+.. .. .. physical page 0: pa = 87fff000 flags = 3
+.. .. .. physical page 10: pa = 87ffe000 flags = 7
+.. .. level-0 pgtbl 1: pa = 803ba000
+.. .. .. physical page 0: pa = 87ffd000 flags = 11
+.. level-1 pgtbl 1: pa = 803b9000
+.. .. level-0 pgtbl 0: pa = 803b8000
+.. .. .. physical page 0: pa = 87ffd000 flags = 11
+.. level-1 pgtbl 255: pa = 803b7000
+.. .. level-0 pgtbl 511: pa = 803b6000
+.. .. .. physical page 511: pa = 87ffb000 flags = 5
 
-所以每个模块写完后都要进行尽可能完善的测试, 助教提供的测试用例远远不够, 请对你的代码负责
+test-2
 
-另外, 值得强调的一点是：学会使用`panic`和`assert`做必要的检查
+level-2 pgtbl: pa = 803bd000
+.. level-1 pgtbl 0: pa = 803bc000
+.. .. level-0 pgtbl 0: pa = 803bb000
+.. .. .. physical page 0: pa = 87fff000 flags = 5
+.. .. level-0 pgtbl 1: pa = 803ba000
+.. level-1 pgtbl 1: pa = 803b9000
+.. .. level-0 pgtbl 0: pa = 803b8000
+.. .. .. physical page 0: pa = 87ffd000 flags = 11
+.. level-1 pgtbl 255: pa = 803b7000
+.. .. level-0 pgtbl 511: pa = 803b6000
+.. .. .. physical page 511: pa = 87ffb000 flags = 5
+```
 
-在出问题前输出有价值的错误信息, 比系统直接卡死或进入错误状态, 更容易Debug
+#### 测试二
 
-这种理论又叫**防御性编程**, 对输入参数保持警惕, 充分检查, 确保错误不会在函数间传递
+- va_1=0x100000, va_2=0x8000 分别映射到用户物理页
+- 验证 PTE.V、PA 匹配、权限匹配
+- 解映射后验证 PTE.V 已清零
+- test_mapping_and_unmapping passed!
 
-**尾声**
+## 构建与运行
 
-这次实验在`kvm_init`里埋下了一些伏笔: CLINT、PLIC的寄存器映射还没用起来
+```bash
+make build
+make run     # Ctrl+A, X 退出
+make debug   # 调试模式
+```
 
-不要着急, 下一次实验的主题是——**中断和异常**, 那时会用到
+## 环境
 
-实验的基本原则之一: 绝大多数增添或修改只服务于本次的实验目标, 少量服务于下一次实验的实验目标
-
+- OS: WSL2 + Ubuntu 22.04
+- 编译器: riscv64-linux-gnu-gcc
+- 模拟器: qemu-system-riscv64
+- 参考: xv6-riscv-2020 (util 分支)
