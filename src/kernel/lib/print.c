@@ -8,15 +8,13 @@ static char digits[] = "0123456789abcdef";
 static spinlock_t print_lk;
 
 /* 初始化uart + 初始化printf锁 */
-void print_init(void)
-{
+void print_init(void) {
     uart_init();
     spinlock_init(&print_lk, "printf");
 }
 
 /* %d %p */
-static void printint(int xx, int base, int sign)
-{
+static void printint(int xx, int base, int sign) {
     char buf[16];
     int i;
     uint32 x;
@@ -27,8 +25,7 @@ static void printint(int xx, int base, int sign)
         x = xx;
 
     i = 0;
-    do
-    {
+    do {
         buf[i++] = digits[x % base];
     } while ((x /= base) != 0);
 
@@ -40,8 +37,7 @@ static void printint(int xx, int base, int sign)
 }
 
 /* %x */
-static void printptr(uint64 x)
-{
+static void printptr(uint64 x) {
     uart_putc_sync('0');
     uart_putc_sync('x');
     for (int i = 0; i < (sizeof(uint64) * 2); i++, x <<= 4)
@@ -57,19 +53,47 @@ static void printptr(uint64 x)
     5. %s (字符串)
     提示: stdarg.h中的va_list中包括你需要的参数地址
 */
-void printf(const char *fmt, ...)
-{
-
+void printf(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    spinlock_acquire(&print_lk);
+    for (char* p = (char*)fmt; *p; p++) {
+        if (*p != '%') {
+            uart_putc_sync(*p);
+            continue;
+        }
+        p++;
+        switch (*p) {
+        case 'd':
+            printint(va_arg(args, int), 10, 1);
+            break;
+        case 'p':
+            printint(va_arg(args, uint32), 16, 0);
+            break;
+        case 'x':
+            printptr(va_arg(args, uint64));
+            break;
+        case 'c':
+            uart_putc_sync((char)va_arg(args, int));
+            break;
+        case 's':
+            for (char* t = va_arg(args, char*); *t; t++)
+                uart_putc_sync(*t);
+            break;
+        default:
+            uart_putc_sync(*p);
+            break;
+        }
+    }
+    spinlock_release(&print_lk);
 }
-
 
 
 /* 如果发生panic, UART的停止标志 */
 volatile int panicked = 0;
 
 /* 报错并终止输出 */
-void panic(const char *s)
-{
+void panic(const char* s) {
     printf("panic! %s\n", s);
     panicked = 1;
     while (1)
@@ -77,7 +101,6 @@ void panic(const char *s)
 }
 
 /* 如果不满足条件, 则调用panic */
-void assert(bool condition, const char *warning)
-{
-
+void assert(bool condition, const char* warning) {
+    if (!condition) panic(warning);
 }
