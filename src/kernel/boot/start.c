@@ -1,12 +1,12 @@
 #include "../arch/mod.h"
+#include "../lib/mod.h"
 
 // 每个CPU在运行操作系统时需要一个初始的函数栈
 __attribute__((aligned(16))) uint8 CPU_stack[4096 * NCPU];
 
 extern void main();
 
-void start()
-{
+void start() {
     // 暂时不开启分页，使用物理地址
     w_satp(0);
 
@@ -22,7 +22,12 @@ void start()
     w_mstatus(status);
 
     // 设置M-mode的返回地址
-
+    w_mepc((uint64)main);
     // 触发状态迁移，回到上一个状态（M-mode->S-mode）
-
+    w_medeleg(0xffff);
+    w_mideleg(0xffff);
+    w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
+    w_pmpaddr0(0x3fffffffffffffull);
+    w_pmpcfg0(0xf);
+    asm volatile("mret");
 }
