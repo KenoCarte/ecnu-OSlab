@@ -5,6 +5,8 @@
 void pmem_init(void);
 void *pmem_alloc(bool in_kernel);
 void pmem_free(uint64 page, bool in_kernel);
+void test_case_1(void);
+void test_case_2(void);
 
 /* kvm.c: 内核态虚拟内存管理 + 页表通用函数 */
 

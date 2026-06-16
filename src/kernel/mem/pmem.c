@@ -85,3 +85,85 @@ void pmem_free(uint64 page, bool in_kernel) {
     }
     spinlock_release(lk);
 }
+
+void test_case_1() {
+    void* page = NULL;
+
+    while (1) {
+        // page = (void *)pmem_alloc(true);
+        // ((page_node_t *)page)->next = NULL; // 避免编译器优化掉对page的使用
+        page = pmem_alloc(false);
+        ((page_node_t*)page)->next = NULL; // 避免编译器优化掉对page的使用
+    }
+}
+
+#define TEST_CNT 10
+
+// 测试目标: 常规申请和释放操作
+void test_case_2() {
+    alloc_region_t* user_ar = &user_region;
+    uint64 user_pages[TEST_CNT];
+
+    for (int i = 0; i < TEST_CNT; i++)
+        user_pages[i] = 0;
+
+    printf("=== test_case_2: Phase 1 - Allocate User Pages ===\n");
+    for (int i = 0; i < TEST_CNT; i++) {
+        user_pages[i] = (uint64)pmem_alloc(false);
+
+        printf("Allocated user page[%d] @ %p\n", i, (void*)user_pages[i]);
+
+        if (!(user_pages[i] >= user_ar->begin && user_pages[i] < user_ar->end)) {
+            printf("Assertion failed: Page address out of bounds! Page: %p, Region: [%p, %p)\n",
+                (void*)user_pages[i], (void*)user_ar->begin, (void*)user_ar->end);
+            panic("Page address out of user region bounds");
+        }
+
+        memset((void*)user_pages[i], 0xAA, PGSIZE);
+    }
+
+    printf("=== test_case_2: Phase 2 - Pre-free Check ===\n");
+    spinlock_acquire(&user_ar->lk);
+    int expected_before = (user_ar->end - user_ar->begin) / PGSIZE - TEST_CNT;
+    int actual = user_ar->allocable;
+    printf("Expected allocable: %d, Actual: %d\n", expected_before, actual);
+    assert(user_ar->allocable == expected_before, "Allocable count incorrect before free");
+    spinlock_release(&user_ar->lk);
+
+    printf("=== test_case_2: Phase 3 - Free Pages ===\n");
+    for (int i = 0; i < TEST_CNT; i++) {
+        pmem_free(user_pages[i], false);
+        printf("Free user page[%d] @ %p\n", i, (void*)user_pages[i]);
+    }
+
+    printf("=== test_case_2: Phase 4 - Post-free Check ===\n");
+    spinlock_acquire(&user_ar->lk);
+    int expected_after = (user_ar->end - user_ar->begin) / PGSIZE;
+    actual = user_ar->allocable;
+    printf("Expected allocable: %d, Actual: %d\n", expected_after, actual);
+    assert(user_ar->allocable == expected_after, "Allocable count not restored after free");
+    if (user_ar->list_head.next != NULL)
+        printf("Free list head @ %p\n", user_ar->list_head.next);
+    else
+        panic("Free list is empty after freeing pages");
+    spinlock_release(&user_ar->lk);
+
+    printf("=== test_case_2: Phase 5 - Reallocate & Verify Zero ===\n");
+    for (int i = 0; i < TEST_CNT; i++) {
+        void* page = pmem_alloc(false);
+        printf("Reallocated page[%d] @ %p\n", i, page);
+
+        bool non_zero = false;
+        for (int j = 0; j < PGSIZE / sizeof(int); j++) {
+            if (((int*)page)[j] != 0) {
+                non_zero = true;
+                printf("Non-zero value detected at offset %d: 0x%x\n", j, ((int*)page)[j]);
+                break;
+            }
+        }
+        assert(!non_zero, "Memory not zeroed after free");
+        printf("Zero verification passed\n");
+    }
+
+    printf("test_case_2 passed!\n");
+}
