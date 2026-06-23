@@ -9,8 +9,7 @@ extern void timer_vector();
 static uint64 mscratch[NCPU][5];
 
 // 时钟初始化
-void timer_init()
-{
+void timer_init() {
     // 获取当前cpuid
     int hartid = r_tp();
 
@@ -43,19 +42,24 @@ void timer_init()
 static timer_t sys_timer;
 
 // 时钟创建
-void timer_create()
-{
-
+void timer_create() {
+    sys_timer.ticks = 0;
+    spinlock_init(&sys_timer.lk, "timer");
 }
 
 // 时钟更新
-void timer_update()
-{
+void timer_update() {
+    spinlock_acquire(&sys_timer.lk);
+    sys_timer.ticks++;
+    spinlock_release(&sys_timer.lk);
 
 }
 
 // 获取滴答数量 (不把sys_timer暴露出去, 只提供安全的访问接口)
-uint64 timer_get_ticks()
-{
-
+uint64 timer_get_ticks() {
+    uint64 ticks;
+    spinlock_acquire(&sys_timer.lk);
+    ticks = sys_timer.ticks;
+    spinlock_release(&sys_timer.lk);
+    return ticks;
 }

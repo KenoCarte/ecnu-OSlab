@@ -46,6 +46,7 @@ typedef struct alloc_region
 extern char KERNEL_DATA[];
 extern char ALLOC_BEGIN[];
 extern char ALLOC_END[];
+extern char trampoline[];
 
 // 可分配回收的区域中内核持有前KERN_PAGES个页面
 #define KERN_PAGES 1024

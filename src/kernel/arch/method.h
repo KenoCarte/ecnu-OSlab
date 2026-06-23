@@ -1,4 +1,5 @@
 #pragma once
+#include "type.h"
 
 /* RISC-V相关的寄存器读写 */
 
@@ -267,4 +268,14 @@ static inline uint64 r_ra()
 static inline void sfence_vma()
 {
     asm volatile("sfence.vma zero, zero");
+}
+
+static inline void w_pmpcfg0(uint64 x)
+{
+    asm volatile("csrw pmpcfg0, %0" : : "r"(x));
+}
+
+static inline void w_pmpaddr0(uint64 x)
+{
+    asm volatile("csrw pmpaddr0, %0" : : "r"(x));
 }
