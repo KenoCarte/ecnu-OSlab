@@ -15,7 +15,51 @@ extern char* exception_info[16]; // 异常错误信息
 // 在user_vector()里面调用
 // 用户态trap处理的核心逻辑
 void trap_user_handler() {
-
+    uint64 sepc = r_sepc();
+    uint64 sstatus = r_sstatus();
+    uint64 scause = r_scause();
+    uint64 stval = r_stval();
+    assert(sstatus & SSTATUS_SPP == 0, "trap_user_handler: not from u-mode");
+    w_stvec((uint64)kernel_vector);
+    proc_t* p = myproc();
+    p->tf->user_to_kern_epc = sepc;
+    int trap_id = scause & 0xf;
+    if (scause & 0x8000000000000000ul) {
+        // 1-中断处理
+        switch (trap_id) // 中断产生原因分类
+        {
+        case 1:case 5:
+            timer_interrupt_handler();
+            break;
+        case 9:
+            external_interrupt_handler();
+            break;
+        default: // 例外处理
+            printf("\nunexpected interrupt: %s\n", interrupt_info[trap_id]);
+            printf("trap_id = %d, sepc = %p, stval = %p\n", trap_id, sepc, stval);
+            panic("trap_user_handler");
+        }
+    }
+    else {
+        // 2-异常处理
+        switch (trap_id) // 异常产生原因分类
+        {
+        case 8:
+            uint64 syscall_num = p->tf->a7;
+            switch (syscall_num) {
+            case 0:
+                printf("proczero: hello world!\n");
+                break;
+            }
+            p->tf->user_to_kern_epc += 4;
+            break;
+        default: // 例外处理
+            printf("\nunexpected exception: %s\n", exception_info[trap_id]);
+            printf("trap_id = %d, sepc = %p, stval = %p\n", trap_id, sepc, stval);
+            panic("trap_user_handler");
+        }
+    }
+    trap_user_return();
 }
 
 // 调用user_return()
