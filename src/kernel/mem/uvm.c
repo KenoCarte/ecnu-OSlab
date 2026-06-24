@@ -191,18 +191,38 @@ void uvm_munmap(uint64 begin, uint32 npages) {
 
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
 uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) {
-
+    uint64 new_top = cur_heap_top + len;
+    if (new_top >= MMAP_BEGIN) return -1;
+    for (uint64 va = ALIGN_UP(cur_heap_top, PGSIZE); va < ALIGN_UP(new_top, PGSIZE); va += PGSIZE) {
+        uint64 pa = (uint64)pmem_alloc(false);
+        assert(pa != 0, "uvm_heap_grow: pmem_alloc failed");
+        vm_mappages(pgtbl, va, pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+    return new_top;
 }
 
 // 用户堆空间减少, 返回新的堆顶地址
 uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) {
-
+    if (cur_heap_top < len) return 0;
+    uint64 new_top = cur_heap_top - len;
+    for (uint64 va = ALIGN_UP(new_top, PGSIZE); va < ALIGN_UP(cur_heap_top, PGSIZE); va += PGSIZE)
+        vm_unmappages(pgtbl, va, PGSIZE, true);
+    return new_top;
 }
 
 // 处理函数栈增长导致的page fault事件
 // 成功返回new_ustack_npage，失败返回-1
 uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr) {
-
+    uint64 stk_base = TRAPFRAME - old_ustack_npage * PGSIZE;
+    if (fault_addr < MMAP_END || fault_addr >= stk_base) return -1;
+    uint64 new_stk_base = ALIGN_DOWN(fault_addr, PGSIZE);
+    uint64 new_ustack_npage = (TRAPFRAME - new_stk_base) / PGSIZE;
+    for (uint64 va = new_stk_base; va < stk_base; va += PGSIZE) {
+        uint64 pa = (uint64)pmem_alloc(false);
+        assert(pa != 0, "uvm_ustack_grow: pmem_alloc failed");
+        vm_mappages(pgtbl, va, pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+    return new_ustack_npage;
 }
 
 /*----------------------part-4: 用户页表管理相关----------------------*/
