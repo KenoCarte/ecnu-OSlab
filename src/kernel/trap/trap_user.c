@@ -19,7 +19,7 @@ void trap_user_handler() {
     uint64 sstatus = r_sstatus();
     uint64 scause = r_scause();
     uint64 stval = r_stval();
-    assert(sstatus & SSTATUS_SPP == 0, "trap_user_handler: not from u-mode");
+    assert((sstatus & SSTATUS_SPP) == 0, "trap_user_handler: not from u-mode");
     w_stvec((uint64)kernel_vector);
     proc_t* p = myproc();
     p->tf->user_to_kern_epc = sepc;
@@ -30,6 +30,9 @@ void trap_user_handler() {
         {
         case 1:case 5:
             timer_interrupt_handler();
+            // static int user_tick_cnt = 0;
+            // if (++user_tick_cnt % 100 == 0)
+            //     printf("[user-mode] timer tick #%d\n", user_tick_cnt);
             break;
         case 9:
             external_interrupt_handler();
@@ -67,13 +70,16 @@ void trap_user_handler() {
 void trap_user_return() {
     proc_t* p = mycpu()->proc;
     assert(p != NULL, "trap_user_handler: p is NULL");
+    intr_off();
+    w_stvec(TRAMPOLINE + (user_vector - trampoline));
     p->tf->user_to_kern_hartid = mycpuid();
-    p->tf->user_to_kern_sp = (uint64)p->kstack + PGSIZE;
-    p->tf->user_to_kern_trapvector = (uint64)user_vector;
+    p->tf->user_to_kern_trapvector = (uint64)trap_user_handler;
+    p->tf->user_to_kern_satp = r_satp();
     w_sepc(p->tf->user_to_kern_epc);
     uint64 status = r_sstatus();
     status &= ~SSTATUS_SPP;
     status |= SSTATUS_SPIE;
     w_sstatus(status);
-    user_return(p->tf, MAKE_SATP(p->pagetable));
+    void (*jmp)(uint64, uint64) = (void (*)(uint64, uint64))TRAMPOLINE + (user_return - trampoline);
+    jmp(TRAPFRAME, MAKE_SATP(p->pgtbl));
 }

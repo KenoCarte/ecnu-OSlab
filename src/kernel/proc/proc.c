@@ -23,24 +23,24 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe) {
     pgtbl_t pgtbl = (pgtbl_t)pmem_alloc(true);
     assert(pgtbl != NULL, "proc_pgtbl_init: pmem_alloc failed");
     vm_mappages(pgtbl, TRAMPOLINE, (uint64)&trampoline, PGSIZE, PTE_R | PTE_X);
-    vm_mappages(pgtbl, TRAPFRAME, trapframe, PGSIZE, PTE_R | PTE_W | PTE_U);
+    vm_mappages(pgtbl, TRAPFRAME, trapframe, PGSIZE, PTE_R | PTE_W);
     return pgtbl;
 }
 
 /*
-    第一个用户态进程的创建
-    它的代码和数据位于initcode.h的initcode数组
+第一个用户态进程的创建
+它的代码和数据位于initcode.h的initcode数组
 
-    第一个进程的用户地址空间布局:
-    trapoline   (1 page)
-    trapframe   (1 page)
-    ustack      (1 page)
-    .......
-                        <--heap_top
-    code + data (1 page)
-    empty space (1 page) 最低的4096字节 不分配物理页，同时不可访问
+第一个进程的用户地址空间布局:
+trapoline   (1 page)
+trapframe   (1 page)
+ustack      (1 page)
+.......
+<--heap_top
+code + data (1 page)
+empty space (1 page) 最低的4096字节 不分配物理页，同时不可访问
 
-    注意: 用用户空间的地址映射需要标记 PTE_U
+注意: 用用户空间的地址映射需要标记 PTE_U
 */
 void proc_make_first() {
     proczero.pid = 0;
@@ -55,12 +55,13 @@ void proc_make_first() {
     proczero.heap_top = USER_BASE;
     void* elf = pmem_alloc(false);
     assert(elf != NULL, "proc_make_first: elf alloc failed");
-    memcpy(elf, initcode, initcode_len);
+    memmove(elf, initcode, initcode_len);
     vm_mappages(proczero.pgtbl, proczero.heap_top, (uint64)elf, PGSIZE, PTE_R | PTE_W | PTE_X | PTE_U);
     proczero.heap_top += PGSIZE;
-    proczero.tf->user_to_kern_sp = TRAPFRAME;
-    proczero.tf->user_to_kern_epc = USER_BASE;
     proczero.kstack = KSTACK(0);
+    proczero.tf->user_to_kern_sp = proczero.kstack + PGSIZE;
+    proczero.tf->user_to_kern_epc = USER_BASE;
+    proczero.tf->sp = TRAPFRAME;
     proczero.ctx.ra = (uint64)trap_user_return;
     proczero.ctx.sp = proczero.kstack + PGSIZE;
     mycpu()->proc = &proczero;

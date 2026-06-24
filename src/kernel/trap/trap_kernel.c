@@ -1,7 +1,7 @@
 #include "mod.h"
 
 // 中断信息
-static char* interrupt_info[16] = {
+char* interrupt_info[16] = {
     "U-mode software interrupt",      // 0
     "S-mode software interrupt",      // 1
     "reserved-1",                     // 2
@@ -21,7 +21,7 @@ static char* interrupt_info[16] = {
 };
 
 // 异常信息
-static char* exception_info[16] = {
+char* exception_info[16] = {
     "Instruction address misaligned", // 0
     "Instruction access fault",       // 1
     "Illegal instruction",            // 2
@@ -86,6 +86,9 @@ void trap_kernel_handler() {
         {
         case 1:case 5:
             timer_interrupt_handler();
+            // static int kern_tick_cnt = 0;
+            // if (++kern_tick_cnt % 100 == 0)
+            //     printf("[kernel-mode] timer tick #%d\n", kern_tick_cnt);
             break;
         case 9:
             external_interrupt_handler();
