@@ -97,7 +97,15 @@ static void mmap_merge(mmap_region_t* mmap_1, mmap_region_t* mmap_2, bool keep_m
 // 由uvm_mmap调用(处理begin==0的情况)
 // 成功返回begin, 失败返回0
 static uint64 uvm_mmap_find(mmap_region_t* head_mmap, uint64 len, mmap_region_t** p_last_mmap, mmap_region_t** p_tmp_mmap) {
-
+    uint64 cur = MMAP_BEGIN;
+    while (*p_tmp_mmap) {
+        if (cur + len <= (*p_tmp_mmap)->begin) return cur;
+        cur = (*p_tmp_mmap)->begin + (*p_tmp_mmap)->npages * PGSIZE;
+        *p_last_mmap = *p_tmp_mmap;
+        *p_tmp_mmap = (*p_tmp_mmap)->next;
+    }
+    if (cur + len <= MMAP_END) return cur;
+    return 0;
 }
 
 // 在用户页表和进程mmap链里新增mmap区域 [begin, begin + npages * PGSIZE)
@@ -105,14 +113,78 @@ static uint64 uvm_mmap_find(mmap_region_t* head_mmap, uint64 len, mmap_region_t*
 // 注意: 如果start==0, 意味着需要内核自主找一块足够大的空间
 // 失败则panic卡死
 void uvm_mmap(uint64 begin, uint32 npages, int perm) {
-
+    proc_t* p = myproc();
+    assert(p != NULL, "uvm_mmap: p is NULL");
+    mmap_region_t* last_mmap = NULL;
+    mmap_region_t** p_last_mmap = &last_mmap, ** p_tmp_mmap = &p->mmap;
+    if (!begin) {
+        begin = uvm_mmap_find(p->mmap, npages * PGSIZE, p_last_mmap, p_tmp_mmap);
+        assert(begin != 0, "uvm_mmap: no enough space");
+    }
+    else {
+        while (*p_tmp_mmap) {
+            if (begin + npages * PGSIZE <= (*p_tmp_mmap)->begin) break;
+            *p_last_mmap = *p_tmp_mmap;
+            p_tmp_mmap = &((*p_tmp_mmap)->next);
+        }
+        assert(begin >= USER_BASE && begin + npages * PGSIZE <= MMAP_END, "uvm_mmap: out of range");
+    }
+    mmap_region_t* node = mmap_region_alloc();
+    node->begin = begin;
+    node->npages = npages;
+    node->next = *p_tmp_mmap;
+    if (*p_last_mmap) (*p_last_mmap)->next = node;
+    else p->mmap = node;
+    if (*p_tmp_mmap && begin + npages * PGSIZE == (*p_tmp_mmap)->begin) {
+        node->next = (*p_tmp_mmap)->next;
+        mmap_merge(node, *p_tmp_mmap, true);
+    }
+    if (*p_last_mmap && (*p_last_mmap)->begin + (*p_last_mmap)->npages * PGSIZE == begin) {
+        (*p_last_mmap)->next = node->next;
+        mmap_merge(*p_last_mmap, node, true);
+    }
+    for (uint64 va = begin; va < begin + npages * PGSIZE; va += PGSIZE) {
+        uint64 pa = (uint64)pmem_alloc(false);
+        assert(pa != 0, "uvm_mmap: pmem_alloc failed");
+        vm_mappages(p->pgtbl, va, pa, PGSIZE, perm | PTE_U);
+    }
 }
 
 
 // 在用户页表和进程mmap链里释放mmap区域 [begin, begin + npages * PGSIZE)
 // 失败则panic卡死
 void uvm_munmap(uint64 begin, uint32 npages) {
-
+    proc_t* p = myproc();
+    assert(p != NULL, "uvm_munmap: p is NULL");
+    for (uint64 va = begin; va < begin + npages * PGSIZE; va += PGSIZE)
+        vm_unmappages(p->pgtbl, va, PGSIZE, true);
+    mmap_region_t* prev = NULL, * cur = p->mmap;
+    while (cur) {
+        if (begin >= cur->begin && begin + npages * PGSIZE <= cur->begin + cur->npages * PGSIZE) break;
+        prev = cur;
+        cur = cur->next;
+    }
+    assert(cur != NULL, "uvm_munmap: mmap region not found");
+    if (begin == cur->begin && npages == cur->npages) {
+        if (cur == p->mmap) p->mmap = cur->next;
+        else prev->next = cur->next;
+        mmap_region_free(cur);
+    }
+    else if (begin == cur->begin) {
+        cur->begin += npages * PGSIZE;
+        cur->npages -= npages;
+    }
+    else if (begin + npages * PGSIZE == cur->begin + cur->npages * PGSIZE) {
+        cur->npages -= npages;
+    }
+    else {
+        mmap_region_t* new_node = mmap_region_alloc();
+        new_node->begin = begin + npages * PGSIZE;
+        new_node->npages = (cur->begin + cur->npages * PGSIZE - new_node->begin) / PGSIZE;
+        new_node->next = cur->next;
+        cur->npages = (begin - cur->begin) / PGSIZE;
+        cur->next = new_node;
+    }
 }
 
 /*------------------part-3: 用户空间heap和stack管理相关------------------*/
