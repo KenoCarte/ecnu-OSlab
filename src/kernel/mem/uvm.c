@@ -230,7 +230,14 @@ uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr
 // 递归释放 页表占用的物理页 和 页表管理的物理页
 // ps: 顶级页表level = 3
 static void destroy_pgtbl(pgtbl_t pgtbl, uint32 level) {
-
+    for (int i = 0; i < PGSIZE / sizeof(pte_t); i++) {
+        pte_t pte = pgtbl[i];
+        if (!((pte)&PTE_V)) continue;
+        uint64 pgtbl_1 = PTE_TO_PA(pte);
+        if (level > 1 && PTE_CHECK(pte)) destroy_pgtbl((pgtbl_t)pgtbl_1, level - 1);
+        else pmem_free(pgtbl_1, false);
+    }
+    pmem_free((uint64)pgtbl, true);
 }
 
 // 页表销毁
@@ -264,5 +271,11 @@ static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end) {
 // 拷贝页表 (拷贝并不包括 trapframe 和 trampoline)
 // 拷贝的页表管理的物理页是原来页表的复制品
 void uvm_copy_pgtbl(pgtbl_t old, pgtbl_t new, uint64 heap_top, uint64 ustack_npage, mmap_region_t* mmap) {
-
+    copy_range(old, new, USER_BASE, heap_top);
+    copy_range(old, new, TRAPFRAME - ustack_npage * PGSIZE, TRAPFRAME);
+    mmap_region_t* tmp = mmap;
+    while (tmp) {
+        copy_range(old, new, tmp->begin, tmp->begin + tmp->npages * PGSIZE);
+        tmp = tmp->next;
+    }
 }
