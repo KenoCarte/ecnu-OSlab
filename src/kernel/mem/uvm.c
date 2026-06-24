@@ -5,20 +5,57 @@
 // 用户态地址空间[src, src+len) 拷贝至 内核态地址空间[dst, dst+len)
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyin(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len) {
-
+    uint64 va = ALIGN_DOWN(src, PGSIZE);
+    uint32 off = src - va, copied = 0;
+    while (copied < len) {
+        uint32 to_copy = MIN(PGSIZE - off, len - copied);
+        pte_t* pte = vm_getpte(pgtbl, va, false);
+        assert(pte != NULL && (*pte) & PTE_V, "uvm_copyin: invalid pte");
+        uint64 pa = (uint64)PTE_TO_PA(*pte);
+        memmove((char*)(dst + copied), (char*)(pa + off), to_copy);
+        copied += to_copy;
+        off = 0;
+        va += PGSIZE;
+    }
 }
 
 // 内核态地址空间[src, src+len） 拷贝至 用户态地址空间[dst, dst+len)
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyout(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len) {
-
+    uint64 va = ALIGN_DOWN(dst, PGSIZE);
+    uint32 off = dst - va, copied = 0;
+    while (copied < len) {
+        uint32 to_copy = MIN(PGSIZE - off, len - copied);
+        pte_t* pte = vm_getpte(pgtbl, va, false);
+        assert(pte != NULL && (*pte) & PTE_V, "uvm_copyout: invalid pte");
+        uint64 pa = (uint64)PTE_TO_PA(*pte);
+        memmove((char*)(pa + off), (char*)(src + copied), to_copy);
+        copied += to_copy;
+        off = 0;
+        va += PGSIZE;
+    }
 }
 
 // 用户态字符串拷贝到内核态
 // 最多拷贝maxlen字节, 中途遇到'\0'则终止
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyin_str(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 maxlen) {
-
+    uint64 va = ALIGN_DOWN(src, PGSIZE);
+    uint32 off = src - va, copied = 0;
+    while (copied < maxlen) {
+        uint32 to_copy = MIN(PGSIZE - off, maxlen - copied);
+        pte_t* pte = vm_getpte(pgtbl, va, false);
+        assert(pte != NULL && (*pte) & PTE_V, "uvm_copyin_str: invalid pte");
+        uint64 pa = (uint64)PTE_TO_PA(*pte);
+        for (uint32 i = 0; i < to_copy; i++) {
+            char c = *(char*)(pa + off + i);
+            *(char*)(dst + copied + i) = c;
+            if (c == '\0') return;
+        }
+        copied += to_copy;
+        off = 0;
+        va += PGSIZE;
+    }
 }
 
 /*--------------------part-2: mmap_region相关--------------------*/
