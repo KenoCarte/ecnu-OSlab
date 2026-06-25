@@ -98,11 +98,14 @@ static void mmap_merge(mmap_region_t* mmap_1, mmap_region_t* mmap_2, bool keep_m
 // 成功返回begin, 失败返回0
 static uint64 uvm_mmap_find(mmap_region_t* head_mmap, uint64 len, mmap_region_t** p_last_mmap, mmap_region_t** p_tmp_mmap) {
     uint64 cur = MMAP_BEGIN;
-    while (*p_tmp_mmap) {
-        if (cur + len <= (*p_tmp_mmap)->begin) return cur;
-        cur = (*p_tmp_mmap)->begin + (*p_tmp_mmap)->npages * PGSIZE;
-        *p_last_mmap = *p_tmp_mmap;
-        *p_tmp_mmap = (*p_tmp_mmap)->next;
+    mmap_region_t* prev = *p_last_mmap;
+    mmap_region_t* nxt = *p_tmp_mmap;
+    while (nxt) {
+        //printf("cur = %p, nxt->begin = %p, len = %x\n", cur, nxt->begin, len);
+        if (cur + len <= nxt->begin) return cur;
+        cur = nxt->begin + nxt->npages * PGSIZE;
+        prev = nxt, *p_last_mmap = prev;
+        nxt = nxt->next, *p_tmp_mmap = nxt;
     }
     if (cur + len <= MMAP_END) return cur;
     return 0;
@@ -115,33 +118,36 @@ static uint64 uvm_mmap_find(mmap_region_t* head_mmap, uint64 len, mmap_region_t*
 void uvm_mmap(uint64 begin, uint32 npages, int perm) {
     proc_t* p = myproc();
     assert(p != NULL, "uvm_mmap: p is NULL");
-    mmap_region_t* last_mmap = NULL;
-    mmap_region_t** p_last_mmap = &last_mmap, ** p_tmp_mmap = &p->mmap;
+    mmap_region_t* prev = NULL;
+    mmap_region_t* nxt = p->mmap;
+    mmap_region_t** p_last_mmap = &prev, ** p_tmp_mmap = &nxt;
     if (!begin) {
         begin = uvm_mmap_find(p->mmap, npages * PGSIZE, p_last_mmap, p_tmp_mmap);
         assert(begin != 0, "uvm_mmap: no enough space");
+        prev = *p_last_mmap;
+        nxt = *p_tmp_mmap;
     }
     else {
-        while (*p_tmp_mmap) {
-            if (begin + npages * PGSIZE <= (*p_tmp_mmap)->begin) break;
-            *p_last_mmap = *p_tmp_mmap;
-            p_tmp_mmap = &((*p_tmp_mmap)->next);
+        while (nxt) {
+            if (begin < nxt->begin) break;
+            prev = nxt;
+            nxt = nxt->next;
         }
-        assert(begin >= USER_BASE && begin + npages * PGSIZE <= MMAP_END, "uvm_mmap: out of range");
     }
+    assert(begin >= USER_BASE && begin + npages * PGSIZE <= MMAP_END, "uvm_mmap: out of range");
     mmap_region_t* node = mmap_region_alloc();
     node->begin = begin;
     node->npages = npages;
-    node->next = *p_tmp_mmap;
-    if (*p_last_mmap) (*p_last_mmap)->next = node;
+    node->next = nxt;
+    if (prev) prev->next = node;
     else p->mmap = node;
-    if (*p_tmp_mmap && begin + npages * PGSIZE == (*p_tmp_mmap)->begin) {
-        node->next = (*p_tmp_mmap)->next;
-        mmap_merge(node, *p_tmp_mmap, true);
+    if (nxt && begin + npages * PGSIZE == nxt->begin) {
+        node->next = nxt->next;
+        mmap_merge(node, nxt, true);
     }
-    if (*p_last_mmap && (*p_last_mmap)->begin + (*p_last_mmap)->npages * PGSIZE == begin) {
-        (*p_last_mmap)->next = node->next;
-        mmap_merge(*p_last_mmap, node, true);
+    if (prev && prev->begin + prev->npages * PGSIZE == begin) {
+        prev->next = node->next;
+        mmap_merge(prev, node, true);
     }
     for (uint64 va = begin; va < begin + npages * PGSIZE; va += PGSIZE) {
         uint64 pa = (uint64)pmem_alloc(false);
@@ -203,7 +209,7 @@ uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) {
 
 // 用户堆空间减少, 返回新的堆顶地址
 uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) {
-    if (cur_heap_top < len) return 0;
+    if (cur_heap_top < len) return -1;
     uint64 new_top = cur_heap_top - len;
     for (uint64 va = ALIGN_UP(new_top, PGSIZE); va < ALIGN_UP(cur_heap_top, PGSIZE); va += PGSIZE)
         vm_unmappages(pgtbl, va, PGSIZE, true);

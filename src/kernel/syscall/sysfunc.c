@@ -15,8 +15,8 @@ uint64 sys_copyin() {
     proc_t* p = myproc();
     assert(p != NULL, "sys_copyin: p is NULL");
     uvm_copyin(p->pgtbl, (uint64)buf, addr, len * sizeof(int));
-    for (int i = 0; i < len; i++)
-        printf("get a number from user：%d\n", buf[i]);
+    // for (int i = 0; i < len; i++)
+    //     printf("get a number from user：%d\n", buf[i]);
     return 0;
 }
 
@@ -48,7 +48,7 @@ uint64 sys_copyinstr() {
     assert(p != NULL, "sys_copyinstr: p is NULL");
     uvm_copyin_str(p->pgtbl, (uint64)buf, addr, STR_MAXLEN);
     buf[STR_MAXLEN] = '\0';
-    printf("get string from user: %s\n", buf);
+    // printf("get string from user: %s\n", buf);
     return 0;
 }
 
@@ -62,20 +62,34 @@ uint64 sys_brk() {
     arg_uint64(0, &new_heap_top);
     proc_t* p = myproc();
     assert(p != NULL, "sys_brk: p is NULL");
-    if (new_heap_top == 0) return p->heap_top;
+    if (new_heap_top == 0) {
+        // printf("look event：ret_heap_top = %x\n", p->heap_top);
+        // vm_print(p->pgtbl);
+        // printf("\n");
+        return p->heap_top;
+    }
     if (new_heap_top > p->heap_top) {
         uint64 ret = uvm_heap_grow(p->pgtbl, p->heap_top, new_heap_top - p->heap_top);
         if (ret == -1) return -1;
         p->heap_top = ret;
+        // printf("grow event：ret_heap_top = %x\n", new_heap_top);
+        // vm_print(p->pgtbl);
+        // printf("\n");
         return ret;
     }
     else if (new_heap_top < p->heap_top) {
         uint64 ret = uvm_heap_ungrow(p->pgtbl, p->heap_top, p->heap_top - new_heap_top);
-        if (ret == 0) return -1;
+        if (ret == -1) return -1;
         p->heap_top = ret;
+        // printf("ungrow event：ret_heap_top = %x\n", new_heap_top);
+        // vm_print(p->pgtbl);
+        // printf("\n");
         return ret;
     }
-    return -1;
+    // printf("equal event：ret_heap_top = %x\n", new_heap_top);
+    // vm_print(p->pgtbl);
+    // printf("\n");
+    return new_heap_top;
 }
 
 /*
@@ -93,9 +107,9 @@ uint64 sys_mmap() {
     proc_t* p = myproc();
     assert(p != NULL, "sys_mmap: p is NULL");
     uvm_mmap(start, len / PGSIZE, PTE_R | PTE_W | PTE_U);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
+    // uvm_show_mmaplist(p->mmap);
+    // vm_print(p->pgtbl);
+    // printf("\n");
     mmap_region_t* tmp = p->mmap;
     while (tmp) {
         if (start > tmp->begin) start = tmp->begin;
@@ -119,8 +133,8 @@ uint64 sys_munmap() {
     proc_t* p = myproc();
     assert(p != NULL, "sys_munmap: p is NULL");
     uvm_munmap(begin, len / PGSIZE);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
+    // uvm_show_mmaplist(p->mmap);
+    // vm_print(p->pgtbl);
+    // printf("\n");
     return 0;
 }

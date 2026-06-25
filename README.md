@@ -1,553 +1,390 @@
 # LAB-5: 系统调用流程建立 + 用户态虚拟内存管理
 
-**前言**
-
-在lab-4中, 我们初步实现了第一个用户进程`proczero`
-
-它通过`sys_helloworld`系统调用, 利用内核的系统服务发出了"第一声啼哭"
-
-本次实验的核心目的是完善和发展`proczero`, 具体包括两个方面:
-
-- 赋予`proczero`更强的内存掌控能力, 包括堆、栈、离散映射三个部分
-
-- 赋予`proczero`完善的请求服务能力, 建立真正的系统调用流程
-
-## 代码组织结构
+## 用户地址空间完整布局
 
 ```
-ECNU-OSLAB-2025-TASK
-├── LICENSE        开源协议
-├── .vscode        配置了可视化调试环境
-├── registers.xml  配置了可视化调试环境
-├── .gdbinit.tmp-riscv xv6自带的调试配置
-├── common.mk      Makefile中一些工具链的定义
-├── Makefile       编译运行整个项目 (CHANGE, 新增目录syscall)
-├── kernel.ld      定义了内核程序在链接时的布局
-├── pictures       README使用的图片目录 (CHANGE, 日常更新)
-├── README.md      实验指导书 (CHANGE, 日常更新)
-└── src            源码
-    ├── kernel     内核源码
-    │   ├── arch   RISC-V相关
-    │   │   ├── method.h
-    │   │   ├── mod.h
-    │   │   └── type.h
-    │   ├── boot   机器启动
-    │   │   ├── entry.S
-    │   │   └── start.c
-    │   ├── lock   锁机制
-    │   │   ├── spinlock.c
-    │   │   ├── method.h
-    │   │   ├── mod.h
-    │   │   └── type.h
-    │   ├── lib    常用库
-    │   │   ├── cpu.c
-    │   │   ├── print.c
-    │   │   ├── uart.c
-    │   │   ├── utils.c
-    │   │   ├── method.h
-    │   │   ├── mod.h
-    │   │   └── type.h
-    │   ├── mem    内存模块
-    │   │   ├── pmem.c
-    │   │   ├── kvm.c
-    │   │   ├── uvm.c (TODO, 用户态虚拟内存管理主体)
-    │   │   ├── mmap.c (TODO, mmap节点资源仓库)
-    │   │   ├── method.h (CHANGE, 日常更新)
-    │   │   ├── mod.h
-    │   │   └── type.h (CHANGE, 日常更新)
-    │   ├── trap   陷阱模块
-    │   │   ├── plic.c
-    │   │   ├── timer.c
-    │   │   ├── trap_kernel.c
-    │   │   ├── trap_user.c (TODO, 系统调用处理 + pagefault处理)
-    │   │   ├── trap.S
-    │   │   ├── trampoline.S
-    │   │   ├── method.h
-    │   │   ├── mod.h (CHANGE, 日常更新)
-    │   │   └── type.h
-    │   ├── proc   进程模块
-    │   │   ├── proc.c (TODO, proczero->mmap初始化)
-    │   │   ├── swtch.S
-    │   │   ├── method.h
-    │   │   ├── mod.h
-    │   │   └── type.h (CHANGE, 进程结构体里新增mmap字段)
-    │   ├── syscall 系统调用模块
-    │   │   ├── syscall.c (NEW, 系统调用通用逻辑)
-    │   │   ├── sysfunc.c (TODO, 各个系统调用的处理逻辑) 
-    │   │   ├── method.h (NEW)
-    │   │   ├── mod.h (NEW)
-    │   │   └── type.h (NEW)
-    │   └── main.c
-    └── user       用户程序
-        ├── initcode.c (CHANGE, 按照测试需求来设置)
-        ├── sys.h
-        ├── syscall_arch.h
-        └── syscall_num.h (CHANGE, 日常更新)
+ 用户页表                      内核页表
+ ┌──────────────────────┐ ← VA_MAX          ┌──────────────────────┐ ← VA_MAX
+ │  TRAMPOLINE  (1页)   │ 0x3FFFFFF000      │  TRAMPOLINE  (1页)   │
+ │  权限: R+X           │                   │  权限: R+X           │
+ ├──────────────────────┤                   ├──────────────────────┤
+ │  TRAPFRAME   (1页)   │ 0x3FFFFFE000      │  KSTACK(0)   (1页)   │ 0x3FFFFFC000
+ ├──────────────────────┤                   │  ...         ...     │
+ │  ustack      (可增长)│ ← 向下增长        ├──────────────────────┤
+ │  权限: R+W+U         │                   │  alloc region        │
+ │  ...                  │                   │  (identity mapped)   │
+ ├──────────────────────┤ ← MMAP_END        │  权限: R+W           │
+ │                      │                   ├──────────────────────┤
+ │  mmap_region (多块)  │ 离散映射区        │  kernel data         │
+ │  权限: R+W+U         │ 64MB              │  权限: R+W           │
+ │                      │                   ├──────────────────────┤
+ ├──────────────────────┤ ← MMAP_BEGIN      │  kernel code         │
+ │  heap         (可伸缩)│ ← 向上增长        │  权限: R+X           │
+ │  权限: R+W+U         │                   ├──────────────────────┤
+ │  ...                  │                   │  MMIO                │
+ ├──────────────────────┤                   │  (UART/CLINT/PLIC)   │
+ │  code+data   (1页)   │ USER_BASE=0x1000  └──────────────────────┘
+ │  权限: R+W+X+U       │
+ ├──────────────────────┤
+ │  guard page (1页)    │ 0x0
+ │  不可访问             │
+ └──────────────────────┘
 ```
 
-**标记说明**
+## 任务 1：用户态和内核态的数据迁移
 
-**NEW**: 新增源文件, 直接拷贝即可, 无需修改
+### 背景
 
-**CHANGE**: 旧的源文件发生了更新, 直接拷贝即可, 无需修改
+lab-4 的 `sys_helloworld` 无法传递参数——系统调用号通过 `a7` 寄存器传递，a0~a5 存放参数。对于值传递直接读 `tf->ax`；对于地址传递，用户传入的地址基于用户页表，内核使用内核页表，需要手动走查用户页表找到物理地址再做数据迁移。
 
-**TODO**: 你需要实现新功能 / 你需要完善旧功能
+### 实现
 
-## 任务1：用户态和内核态的数据迁移
+**uvm_copyin(pgtbl, dst, src, len)**：用户空间 → 内核空间。沿用户页表逐页查 `vm_getpte` 找到物理地址，`memmove` 分段拷贝。处理非页对齐的起始偏移。
 
-回忆一下上个实验的`sys_helloworld`系统调用, 它的作用是让内核输出`"hello world"`
+**uvm_copyout(pgtbl, dst, src, len)**：内核空间 → 用户空间。与 copyin 对称，方向相反。
 
-一个明显的问题: 用户态程序无法向内核程序传递参数, 导致系统服务非常僵硬和受限
+**uvm_copyin_str(pgtbl, dst, src, maxlen)**：用户空间字符串 → 内核空间。逐字节检查 `\0` 提前终止。
 
-我们可以从普通函数的参数传递获得启示, 传参方法无非两种:
+**trap_user_handler 改动**：ecall 分支改为调用统一的 `syscall()` 分发函数，epc+=4。
 
-- 直接传递值: `add(int a, int b)`, 本质是将参数值放到寄存器里
+**sys_copyin / sys_copyout / sys_copyinstr**：通过 `arg_uint64` / `arg_uint32` 获取用户传入的地址参数，调用对应的 uvm 函数，copyin/copyinstr 将结果 printf 输出。
 
-- 基于地址做间接传递: `strcmp(char *s1, char *s2, int len)`, 本质是将地址放到寄存器里
-
-通过阅读`user/syscall_arch.h`, 可以发现系统调用编号默认放在a7寄存器, a0到a5寄存器则是存放参数
+### 关键设计：syscall 分发
 
 ```c
-static inline long __syscall6(long n, long a, long b, long c, long d, long e, long f)
-{
-    register long a7 __asm__("a7") = n;
-    register long a0 __asm__("a0") = a;
-    register long a1 __asm__("a1") = b;
-    register long a2 __asm__("a2") = c;
-    register long a3 __asm__("a3") = d;
-    register long a4 __asm__("a4") = e;
-    register long a5 __asm__("a5") = f;
-    __asm_syscall("r"(a7), "0"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5))
+// syscall.c — 跳转表驱动
+static uint64 (*syscalls[])(void) = {
+    [SYS_copyin]    sys_copyin,
+    [SYS_copyout]   sys_copyout,
+    [SYS_copyinstr] sys_copyinstr,
+    [SYS_brk]       sys_brk,
+    [SYS_mmap]      sys_mmap,
+    [SYS_munmap]    sys_munmap,
+};
+
+void syscall() {
+    int sys_num = p->tf->a7;
+    p->tf->a0 = syscalls[sys_num]();   // 返回值写入 a0
 }
 ```
 
-内核可以通过访问`proc->tf->ax`直接拿到这些参数 (trapframe实在太好用了~)
+## 任务 2：堆的手动管理与栈的自动管理
 
-- 对于值传递, `arg_uint32`和`arg_uint64`可以很好地完成任务
+### 堆的管理
 
-- 对于地址传递, 必须考虑用户地址空间和内核地址空间不匹配的问题:
+用户通过 `sys_brk(new_heap_top)` 手动伸缩堆：
 
-**用户传入的地址空间是基于用户页表的, 但是进入内核后使用的是内核页表**
+| 情况 | 操作 |
+|------|------|
+| `new_top == 0` | 查询当前堆顶 |
+| `new_top > heap_top` | `uvm_heap_grow`：对齐后逐页 `pmem_alloc(false)` + `vm_mappages` |
+| `new_top < heap_top` | `uvm_heap_ungrow`：对齐后逐页 `vm_unmappages(..., true)` |
+| `new_top == heap_top` | 直接返回 |
 
-解决这个问题需要手动查询用户页表, 找到虚拟地址对应的物理地址, 之后再做数据迁移
+边界检查：堆顶不能超过 `MMAP_BEGIN`（进入 mmap 区域）。
 
-请你完成`kernel/mem/uvm.c`的第一部分, 包括`uvm_copyin`、`uvm_copyout`、`uvm_copyin_str`三个部分
+### 栈的管理
 
-随后, 你需要补全`trap_user_handler`中的系统调用的处理逻辑:
+栈向下增长，由内核自动管理。当用户访问未分配的栈空间时，触发 **13号（Load Page Fault）** 或 **15号（Store/AMO Page Fault）**。
 
-- 调用`syscall`进行分类跳转
-
-- 补全三个具体的处理逻辑 `sys_copyin`、`sys_copyout`、`sys_copyinstr`
-
-- 注意: 这三个系统调用只服务于本次测试, 不是长期保存的系统调用
-
-## 测试1：用户态和内核态的数据迁移
-
-测试逻辑: 
-
-- 用户读取内核中的数组 (1 2 3 4 5)
-
-- 用户将读到的数组传递给内核, 内核收到后打印出来
-
-- 用户将自己的字符串传递给内核, 内核收到后打印出来
+`trap_user_handler` 中新增处理：
 
 ```c
-// in initcode.c
+case 13: case 15:
+    new_npage = uvm_ustack_grow(p->pgtbl, p->ustack_npage, stval);
+    if (new_npage < 0) panic(...);
+    p->ustack_npage = new_npage;
+    break;
+```
+
+**uvm_ustack_grow**：
+1. 检查 `fault_addr` 是否在合法栈扩展区间 `[MMAP_END, stk_base)`
+2. 合法性确认后，从 `fault_addr`（页对齐）到当前栈底逐页分配映射
+3. 返回新的 `ustack_npage`
+
+边界检查：栈底不能越过 `MMAP_END`（进入 mmap 区域）。
+
+## 任务 3：mmap_region_node 仓库管理
+
+### 数据结构
+
+```c
+typedef struct mmap_region {
+    uint64 begin;
+    uint32 npages;
+    struct mmap_region *next;
+} mmap_region_t;
+
+typedef struct mmap_region_node {
+    mmap_region_t mmap;              // 第一成员，与 node 同地址
+    struct mmap_region_node *next;   // 仓库链表指针
+} mmap_region_node_t;
+```
+
+全局仓库：256 个 `node_list[N_MMAP]` 节点 + 链表头 `list_head` + 自旋锁 `list_lk`。
+
+### 实现
+
+| 函数 | 逻辑 |
+|------|------|
+| `mmap_init` | 初始化锁，256 个节点全部头插入 `list_head` 空闲链表 |
+| `mmap_region_alloc` | 加锁 → 取表头节点 → 解锁。空则 panic |
+| `mmap_region_free` | `(mmap_region_node_t*)mmap` 强转 → 加锁 → 头插回链表 |
+
+由于 `mmap_region_t` 是 `mmap_region_node_t` 的第一个成员，二者地址相同，free 时直接强转即可。
+
+## 任务 4：mmap 与 munmap
+
+### 离散内存映射的完整流程
+
+```
+用户 sys_mmap(begin, len)
+  → uvm_mmap(begin, npages, perm)
+    → begin==0 时: uvm_mmap_find 扫描链表找空洞
+    → mmap_region_alloc 创建新节点
+    → 插入有序链表 + 合并相邻节点
+    → pmem_alloc + vm_mappages 分配映射物理页
+```
+
+### uvm_mmap 详细逻辑
+
+1. **找插入位置**：沿 `p->mmap` 链表遍历，找到第一个 `begin < cur->begin` 的位置
+2. **创建节点**：`mmap_region_alloc` + 填写 begin/npages/next
+3. **插入链表**：维护 `prev`/`cur` 指针，正确插入保持有序
+4. **合并相邻**：
+   - 先与后继合并：`node->end == cur->begin` → `mmap_merge(node, cur, true)`
+   - 再与前驱合并：`prev->end == begin` → `mmap_merge(prev, node, true)`
+   - merge 前手动处理 next 指针（merge 不操作 next）
+5. **映射物理页**：逐页 `pmem_alloc(false)` + `vm_mappages(pgtbl, ..., perm | PTE_U)`
+
+### mmap_merge
+
+保留一个节点，释放另一个。`keep_mmap_1=true` 时 mmap_1 吞并 mmap_2；否则反向。**不操作 next 指针**，由调用者处理。
+
+### uvm_mmap_find
+
+扫描 mmap 链表，在 `[MMAP_BEGIN, MMAP_END)` 范围内找第一个足够大的空洞。返回空洞起始地址，失败返回 0。
+
+### uvm_munmap 详细逻辑
+
+1. **解映射物理页**：逐页 `vm_unmappages(va, PGSIZE, true)`
+2. **查找目标 mmap_region**：遍历链表找到包含 `[begin, begin+npages*PGSIZE)` 的节点
+3. **按四种情况处理**：
+
+| 情况 | 操作 |
+|------|------|
+| 完全匹配 | 摘链 → `mmap_region_free` |
+| 左对齐（截左边） | `cur->begin +=`，`cur->npages -=` |
+| 右对齐（截右边） | 仅 `cur->npages -=` |
+| 中间挖洞（分裂） | `mmap_region_alloc` 新节点 → 分裂为两个 |
+
+## 任务 5：页表的复制与销毁
+
+### uvm_destroy_pgtbl
+
+1. 先 `vm_unmappages(TRAPFRAME, ..., true)` 释放 trapframe 物理页
+2. 再 `vm_unmappages(TRAMPOLINE, ..., false)` 仅清映射（不释放——所有进程共享）
+3. 调用 `destroy_pgtbl(pgtbl, 3)` 递归销毁
+
+### destroy_pgtbl（递归）
+
+从 level=3（根页表）开始：
+- 遍历 512 个 PTE，对每个有效项：
+  - 若 `level > 1` 且 `PTE_CHECK`（指向子页表）：递归进入下一级
+  - 否则（数据页）：`pmem_free` 释放
+- 最后 `pmem_free(pgtbl, true)` 释放当前页表物理页
+
+### uvm_copy_pgtbl
+
+利用骨架提供的 `copy_range`（逐页 `vm_getpte` → `pmem_alloc` + `memmove` + `vm_mappages`），分三段复制：
+
+1. 代码+堆区：`[USER_BASE, heap_top)`
+2. 栈区：`[TRAPFRAME - ustack_npage * PGSIZE, TRAPFRAME)`
+3. mmap 区：遍历 mmap 链表，每段调 `copy_range`
+
+## 系统调用一览
+
+| 调用号 | 名称 | 参数 | 功能 |
+|--------|------|------|------|
+| 1 | `SYS_copyin` | a0=addr, a1=len | 用户→内核拷贝 int 数组 |
+| 2 | `SYS_copyout` | a0=addr | 内核→用户拷贝 int 数组 |
+| 3 | `SYS_copyinstr` | a0=addr | 用户→内核拷贝字符串 |
+| 4 | `SYS_brk` | a0=new_top | 伸缩堆顶 |
+| 5 | `SYS_mmap` | a0=begin, a1=len | 创建内存映射 |
+| 6 | `SYS_munmap` | a0=begin, a1=len | 解除内存映射 |
+| 7 | `SYS_test_pgtbl` | — | 测试页表复制销毁 |
+
+## 踩坑记录
+
+### 坑 1：uvm_mmap 插入位置判断错误
+
+**现象**：测试 4 的 mmap 链 merge 全部失效，256 个 node 快速耗尽 panic。
+
+**原因**：链表遍历时用新区间终点与已有节点起点比较：
+
+```c
+// ❌ 错误
+if (begin + npages * PGSIZE <= nxt->begin) break;
+```
+
+当新区间终点超出已有节点起点时，循环跨越了答案，导致插入到错误位置。
+
+**解决**：改用新区间起点比较：
+
+```c
+// ✅ 正确
+if (begin < nxt->begin) break;
+```
+
+### 坑 2：sys_brk 相等情况返回 -1
+
+**现象**：测试 2 第三步 `syscall(SYS_brk, heap_top)` 传入相等的值，返回 -1，后续 syscall 拿到 -1 当 heap_top，连锁崩溃。
+
+**原因**：if-else if 结构最后 `return -1` 会覆盖相等情况。
+
+**解决**：相等时 `return p->heap_top`。
+
+### 坑 3：uvm_mmap merge 后 next 指针悬空
+
+**现象**：merge 后链表出现已释放节点的悬空引用。
+
+**原因**：`mmap_merge` 不操作 next 指针，调用者必须在 merge 前手动接管 `next`：
+
+```c
+node->next = nxt->next;       // 先接管
+mmap_merge(node, nxt, true);    // 再释放
+```
+
+### 坑 4：kvm.c 缺少 trampoline 声明
+
+**现象**：编译报错 `'trampoline' undeclared`。
+
+**原因**：lab-5 骨架的 `mem/type.h` 删除了 `extern char trampoline[]` 声明。
+
+**解决**：在 `kvm.c` 顶部手动加 `extern char trampoline[];`。
+
+## 测试
+
+### 测试 1：用户态和内核态的数据迁移
+
+```c
 #include "sys.h"
 
-int main()
-{
+int main() {
     int L[5];
-    char* s = "hello, world"; 
+    char* s = "hello, world";
     syscall(SYS_copyout, L);
     syscall(SYS_copyin, L, 5);
     syscall(SYS_copyinstr, s);
-    while(1);
+    while (1);
     return 0;
 }
 ```
 
-测试结果见`picture/test-1.png`
+预期输出：
+```
+get a number from user：1
+get a number from user：2
+get a number from user：3
+get a number from user：4
+get a number from user：5
+get string from user: hello, world
+```
 
-## 任务2：堆的手动管理与栈的自动管理
+### 测试 2：堆的手动管理与栈的自动管理
 
-上次实验中, 栈空间被设置为4KB, 堆空间被设置为0KB, 对于非常简单的`initcode.c`是足够的
-
-然而, 现实世界的应用程序需要可以动态增长的栈和堆, 本次实验我们做一个初步的实现
-
-### 堆的管理是手动的
-
-**堆-HEAP**为用户提供了一块连续的大范围内存空间, 它的生长方向的是低地址到高地址
-
-内核给用户程序提供了一个`sys_brk`系统调用, 允许用户改变堆顶的位置
-
-`sys_brk`的效果可以进一步分为:
-
-- 空间增加: old_heap_top < new_heap_top 
-
-- 空间减少: old_heap_top > new_heap_top
-
-- 空间不变: old_heap_top == new_heap_top
-
-- 查询当前栈顶: new_heap_top == 0
-
-涉及内存页面的申请释放、用户页表的修改、`proc->heap_top`的更新
-
-请你完成`sys_brk`、`uvm_heap_grow`、`uvm_heap_ungrow`几个函数
-
-### 栈的管理是自动的
-
-**栈-STACK**为用户的临时变量和函数执行提供了一块连续的内存空间, 它的生长方向是高地址到低地址
-
-用户程序无需显式地管理栈空间, 由内核根据用户需要进行自动管理 (自动的内存申请和映射)
-
-内核不会在进程初始化时直接分配一个很大的栈空间 (默认分配4KB), 而是根据程序运行的需要逐步分配足够大的空间
-
-当用户读或写一块未分配的地址空间时, 会触发**13号异常(Load Page Fault)** / **15号异常(Store/AMO Page Fault)**
-
-我们在`trap_user_handler`里识别这两种异常, 然后调用`uvm_ustack_grow`来处理缺页异常
-
-`uvm_ustack_grow`首先判断发生page fault的地址 (放在stval寄存器) 是否是合理的栈扩展地址
-
-确认合法性后: 申请物理页面、修改用户页表、更新`proc->ustack_npage`
-
-需要提醒的是: 一次可以扩展多个页面, 扩展后不会发生收缩 (和堆的管理不同)
-
-### 边界检查
-
-需要提醒的是: 我们在栈和堆的中间区域里, 划分了一段地址空间作为离散内存空间的区域 (mmap_region)
-
-这块区域的起点地址被定义为`MMAP_BEGIN`, 终点被定义为`MMAP_END` (in `kernl/mem/type.h`)
-
-因此, 栈的生长不应该越过`MMAP_END`, 堆的生长不应该越过`MMAP_BEGIN`
-
-mmap_region的详细介绍放在任务3和和任务4, 这里只需要注意边界检查即可
-
-## 测试2：堆的手动管理与栈的自动管理
-
-**堆的管理**
+**堆测试**：
 
 ```c
-// in initcode.c
 #include "sys.h"
-
 #define PGSIZE 4096
 
-int main()
-{
+int main() {
     long long heap_top = 0;
-    
     heap_top = syscall(SYS_brk, 0);
     heap_top = syscall(SYS_brk, heap_top + PGSIZE * 9);
     heap_top = syscall(SYS_brk, heap_top);
     heap_top = syscall(SYS_brk, heap_top - PGSIZE * 5);
-
-    while(1);
+    while (1);
     return 0;
 }
 ```
 
-你需要在`sys_brk`中增加一些调试性输出
-
-测试结果见`picture/test-2(1)(2).png`
-
-**栈的管理**
-
-函数内定义非static的长数组就能让栈的大小超过4KB
-
-你也可以通过深度函数递归来实现类似的效果 (比如汉诺塔问题)
+**栈测试**：
 
 ```c
-// in initcode.c
 #include "sys.h"
-
 #define PGSIZE 4096
 
-int main()
-{
+int main() {
     char tmp[PGSIZE * 4];
-
     tmp[PGSIZE * 3] = 'h';
     tmp[PGSIZE * 3 + 1] = 'e';
     tmp[PGSIZE * 3 + 2] = 'l';
     tmp[PGSIZE * 3 + 3] = 'l';
     tmp[PGSIZE * 3 + 4] = 'o';
     tmp[PGSIZE * 3 + 5] = '\0';
-
     syscall(SYS_copyinstr, tmp + PGSIZE * 3);
-
-    tmp[0] = 'w';
-    tmp[1] = 'o';
-    tmp[2] = 'r';
-    tmp[3] = 'l';
-    tmp[4] = 'd';
-    tmp[5] = '\0';
-
+    tmp[0] = 'w'; tmp[1] = 'o'; tmp[2] = 'r'; tmp[3] = 'l'; tmp[4] = 'd'; tmp[5] = '\0';
     syscall(SYS_copyinstr, tmp);
-
     while (1);
     return 0;
 }
 ```
 
-你需要在`trap_user_handler`中增加一些调试性输出
+预期输出：page fault 触发栈自动扩展，两次 `copyinstr` 分别输出 "hello" 和 "world"。
 
-测试结果见`picture/test-3.png`
+### 测试 3：mmap_region_node 仓库管理
 
-## 任务3: mmap_region_node 仓库管理
+将 `main.c` 替换为 README 中测试 3 的版本。双核各申请 128 个 node 再释放，最后 `mmap_show_nodelist` 显示 256 个全部回到空闲链表，索引乱序证明并发正确。
 
-应用程序有了堆和栈就足够了吗? 应用程序有时需要临时申请一块内存空间, 过一会就释放掉
-
-- 用栈来申请的话无法手动释放 (释放函数里数组占用的空间?)
-
-- 用堆来申请的话可能面临碎片化风险 (堆更适合管理大片逻辑连续的内存空间)
-
-因此, 我们需要设计一种可以动态申请释放的离散内存资源管理方法
-
-直观的想法就是链表结构: 将多个内存资源节点通过链表链接在一起, 在进程结构体里存储表头!
-
-说明: 在真实的操作系统里, 堆、栈、内存映射区的细节和定位与我们这里说的有所区别
-
-结构体 `mmap_region_t` 用于描述一块连续地址空间, 它起始于`begin`, 包括`npages`个页面
-
-进程会记录地址空间中的第一个`mmap_region_t`, 各个资源节点通过`next`指针串联 (构成单链表)
-
-**特别提醒: mma_region_t 描述的是已分配出去的空间, 和2024版本是反过来的!**
+### 测试 4：mmap 与 munmap
 
 ```c
-/* mmap_region 描述了一个 mmap区域 */
-typedef struct mmap_region
-{
-    uint64 begin;             // 起始地址
-    uint32 npages;            // 管理的页面数量
-    struct mmap_region *next; // 链表指针
-} mmap_region_t;
-```
+#define MMAP_BEGIN (MMAP_END - 64 * 256 * PGSIZE)
 
-理解这部分后我们继续考虑另一个问题: `mmap_region_t`结构体本身也是一种资源
+int main() {
+    // 7 次 mmap（含 merge）
+    syscall(SYS_mmap, MMAP_BEGIN + 4*PGSIZE, 3*PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 10*PGSIZE, 2*PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 2*PGSIZE,  2*PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 12*PGSIZE, 1*PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 7*PGSIZE, 3*PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN, 2*PGSIZE);
+    syscall(SYS_mmap, 0, 10*PGSIZE);
 
-我们规定OS内核可以提供`N_MMAP`个这样的结构体, 各个进程需要有序获取该资源
-
-为了保证各个进程可以高效和有序地共享这种资源, 我们在`kernel/mem/mmap.c`里维护了一个资源仓库
-
-```c
-/* mmap_region_node 是 mmap_region 在仓库里的包装 */
-typedef struct mmap_region_node
-{
-    mmap_region_t mmap;
-    struct mmap_region_node *next;
-} mmap_region_node_t;
-
-
-// mmap_region_node_t 仓库(单向链表) + 链表头节点(不可分配) + 保护仓库的自旋锁
-static mmap_region_node_t node_list[N_MMAP];
-static mmap_region_node_t list_head;
-static spinlock_t list_lk;
-```
-
-具体来说:
-
-- 首先将 `mmap_region_t` 包装为 `mmap_region_node_t`, 以维护资源仓库的单链表结构
-
-- 然后通过全局的自旋锁 `list_lk` 确保任何时候只有一个进程在获取资源或释放资源
-
-- 提供`mmap_init`、`mmap_region_alloc`、`mmap_region_free`作为资源仓库的对外接口
-
-## 测试3: mmap_region_node 仓库管理
-
-我们先来测试一下, 作为资源仓库, 它能不能在多核竞争的条件下保证资源申请和释放的有序性
-
-```c
-// in main.c
-volatile static int started = 0;
-volatile static bool over_1 = false, over_2 = false;
-volatile static bool over_3 = false, over_4 = false;
-
-void* mmap_list[N_MMAP];
-
-int main()
-{
-    int cpuid = r_tp();
-
-    if(cpuid == 0) {
-        
-        print_init();
-        printf("cpu %d is booting!\n", cpuid);
-        pmem_init();
-        kvm_init();
-        kvm_inithart();
-        trap_kernel_init();
-        trap_kernel_inithart();
-        
-        // 初始化 + 初始状态显示
-        mmap_init();
-        mmap_show_nodelist();
-        printf("\n");
-
-        __sync_synchronize();
-        started = 1;
-
-        // 申请
-        for(int i = 0; i < N_MMAP / 2; i++)
-            mmap_list[i] = mmap_region_alloc();
-        over_1 = true;
-
-        // 屏障
-        while(over_1 == false ||  over_2 == false);
-
-        // 释放
-        for(int i = 0; i < N_MMAP / 2; i++)
-            mmap_region_free(mmap_list[i]);
-        over_3 = true;
-
-        // 屏障
-        while (over_3 == false || over_4 == false);
-
-        // 查看结束时的状态
-        mmap_show_nodelist();        
-
-    } else {
-
-        while(started == 0);
-        __sync_synchronize();
-        printf("cpu %d is booting!\n", cpuid);
-        kvm_inithart();
-        trap_kernel_inithart();
-
-        // 申请
-        for(int i = N_MMAP / 2; i < N_MMAP; i++)
-            mmap_list[i] = mmap_region_alloc();
-        over_2 = true;
-
-        // 屏障
-        while(over_1 == false || over_2 == false);
-
-        // 释放
-        for(int i = N_MMAP / 2; i < N_MMAP; i++)
-            mmap_region_free(mmap_list[i]);
-        over_4 = true;
-    }
-
+    // 7 次 munmap（含四种截断类型）
+    syscall(SYS_munmap, MMAP_BEGIN + 10*PGSIZE, 5*PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN, 10*PGSIZE);
+    // ... 其余 munmap
     while (1);
 }
 ```
 
-测试结果见`picture/test-4(1)(2).png`
+验证 merge 后链表归并正确、munmap 不 panic、vm_print 映射正常。
 
-- 第一部分的输出应该是 `node X index = X` (X从0增加到255)
+### 测试 5：页表的复制与销毁
 
-- 第二部分输出应该是两股输出交替 (node从0增加到255, 一股index从255减到128, 另一股index从127减到0)
+通过 `SYS_test_pgtbl` 系统调用验证：创建新页表 → `uvm_copy_pgtbl` 复制 → 验证新旧物理页不同 → `uvm_destroy_pgtbl` 销毁 → 原进程继续正常工作。
 
-## 任务4: mmap 与 munmap
-
-资源仓库的建立使得 `mmap_region_t` 结构体的申请和释放更加方便和安全, 服务于mmap和munamp操作
-
-我们以mmap为例, 从系统调用出发, 梳理它的逻辑过程:
-
-- 用户程序发出 `sys_mmap(uint64 begin, uint32 len)` 申请一块内存空间
-
-- 调用`uvm_mmap(begin, len / PGSIZE, PTE_R | PTE_W)`进行具体处理
-
-- `uvm_mmap()`首先创建一个新的 mmap_region_t 用于描述这块新的地址空间
-
-- 随后将将这块 new_mmap_region 插入进程 mmap 链表的合适位置 (保持整体有序)
-
-- 新插入的节点可能和前面的节点相邻, 可能和后面的节点相邻, 也可能同时相邻
-
-- 考虑到仓库里资源受限的问题, 我们应该将相邻的节点进行尽可能的合并 (逻辑较为复杂, 建议你画图分析)
-
-- 我们提供了辅助函数`mmap_merge()`用于帮助你完成这些合并, 你可以研究一下怎么用
-
-- 合并完成后, 进行物理页申请和页表修改的步骤 (这里比较简单)
-
-**注意: 当用户传入的begin=0时, 从头到尾扫描, 找到第一个足够大的空间即可**
-
-**另外: 记得为proc结构体增加mmap字段, 并在proc_make_first函数中增加对应的初始化逻辑**
-
-munmap的整体流程于mmap相近, 你应该具备举一反三的能力, 这里不做详细介绍
-
-## 测试4: mmap 与 munmap
-
-我们给出了测试用例用于检测uvm_mmap()和uvm_munmap()中可能的遗漏和错误
-
-请你理解它在测试哪些情况, 以及预期的输出是什么样的
-
-当然, 你应该补充更多测试用例, 以确保实现的完备性
-
-```c
-// in initcode.c
-#include "sys.h"
-
-// 与内核保持一致
-#define VA_MAX       (1ul << 38)
-#define PGSIZE       4096
-#define MMAP_END     (VA_MAX - (16 * 256 + 2) * PGSIZE)
-#define MMAP_BEGIN   (MMAP_END - 64 * 256 * PGSIZE)
-
-int main()
-{
-    // 建议画图理解这些地址和长度的含义
-
-    // sys_mmap 测试 
-    syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 3 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 10 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 2 * PGSIZE,  2 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 12 * PGSIZE, 1 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 7 * PGSIZE, 3 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN, 2 * PGSIZE);
-    syscall(SYS_mmap, 0, 10 * PGSIZE);
-
-    // sys_munmap 测试
-    syscall(SYS_munmap, MMAP_BEGIN + 10 * PGSIZE, 5 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN, 10 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 17 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 15 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 19 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 22 * PGSIZE, 1 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 21 * PGSIZE, 1 * PGSIZE);
-
-    while(1);
-    return 0;
-}
+```
+[test_pgtbl] copy ok: old_pa=87ffe000, new_pa=87ff9000
+[test_pgtbl] destroy ok
+get string from user: hello, world      ← 原进程正常
 ```
 
-请你在`sys_mmap()`和`sys_munmap()`中增加提示性输出
+## 构建与运行
 
-```c
-    proc_t *p = myproc();
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
+```bash
+make build    # 编译
+make run      # QEMU 运行 (Ctrl+A, X 退出)
+make debug    # 调试模式 (配合 gdb-multiarch)
+make clean    # 清理
 ```
 
-测试结果见`picture/test-5(1)(2)(3)(4)(5)(6)(7)(8).png`
+## 环境
 
-## 任务5: 页表的复制与销毁
-
-虽然目前我们只有一个进程且永不退出，但是需要为下一个实验做一些准备
-
-你需要完成页表复制和销毁的函数 uvm_destroy_pgtbl() 和 uvm_copy_pgtbl()
-
-需要提醒的是:
-
-- 第一个函数考虑如何使用递归完成
-
-- 第二个函数深入理解用户地址空间各个区域的特点
-
-## 测试5: 页表的复制与销毁
-
-请你参考前4个测试点的设计, 自行决定如何测试页表的复制和销毁
-
-**尾声**
-
-本次实验大概分成以下三个逻辑阶段:
-
-- 首先关注如何实现用户态和内核态的数据传递 (以trapframe为媒介), 并建立规范的系统调用流程
-
-- 随后讨论了用户态内存空间的管理: 堆、栈、mmap_region
-
-- 最后讨论了用户页表整体的复制和销毁, 为下一个实验做准备
-
-经过两次实验的打磨, proczero现在已经比较强大和完善了, 但是似乎有些孤单?
-
-**我们将在下一个实验引入它的子子孙孙, 从单进程走向多进程！**
+- **OS**：WSL2 + Ubuntu 22.04
+- **编译器**：riscv64-linux-gnu-gcc
+- **模拟器**：qemu-system-riscv64
+- **参考**：xv6-riscv-2020 (util 分支)

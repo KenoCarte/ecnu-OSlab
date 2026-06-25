@@ -18,6 +18,7 @@ int main()
         pmem_init();
         kvm_init();
         kvm_inithart();
+        mmap_init();
         trap_kernel_init();
         trap_kernel_inithart();
         proc_make_first();

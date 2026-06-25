@@ -50,14 +50,15 @@ void trap_user_handler() {
             break;
         case 13:
         case 15:
-            int64 new_npage = uvm_ustack_grow(p->pgtbl, p->ustack_npage, stval);
+            int32 old = (int32)(p->ustack_npage);
+            int32 new_npage = (int32)(uvm_ustack_grow(p->pgtbl, p->ustack_npage, stval));
             if (new_npage < 0) {
                 printf("\nuvm_ustack_grow: failed at stval = %p\n", stval);
                 panic("trap_user_handler: stack grow failed");
             }
             p->ustack_npage = new_npage;
-            printf("[stack-grow] ustack_npage = %d, fault_addr = %p\n",
-                (int)p->ustack_npage, stval);
+            // printf("page fault occured！trap id = 15\n");
+            // printf("ustack_npage：%d -> %d\n", old, new_npage);
             break;
         default: // 例外处理
             printf("\nunexpected exception: %s\n", exception_info[trap_id]);

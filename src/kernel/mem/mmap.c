@@ -9,7 +9,7 @@ static spinlock_t list_lk;
 void mmap_init() {
     spinlock_init(&list_lk, "mmap_list_lk");
     list_head.next = NULL;
-    for (int i = 0; i < N_MMAP; i++) {
+    for (int i = N_MMAP - 1; i >= 0; i--) {
         node_list[i].next = list_head.next;
         list_head.next = &node_list[i];
     }
@@ -27,7 +27,7 @@ mmap_region_t* mmap_region_alloc() {
     list_head.next = node->next;
     node->next = NULL;
     spinlock_release(&list_lk);
-    return node->mmap;
+    return &node->mmap;
 }
 
 // 向仓库归还一个 mmap_region_t
