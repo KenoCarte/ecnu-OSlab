@@ -139,7 +139,7 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe) {
 void proc_make_first() {
     proczero = proc_alloc();
     strncpy(proczero->name, "proczero", sizeof(proczero->name) - 1);
-    void* trapframe = pmem_alloc(true);
+    void* trapframe = pmem_alloc(false);
     assert(trapframe != NULL, "proc_make_first: trapframe alloc failed");
     proczero->pgtbl = proc_pgtbl_init((uint64)trapframe);
     proczero->tf = (trapframe_t*)trapframe;
@@ -174,7 +174,7 @@ int proc_fork() {
     strncpy(c->name, p->name, sizeof(c->name) - 1);
     c->state = RUNNABLE;
     c->parent = p;
-    void* trapframe = pmem_alloc(true);
+    void* trapframe = pmem_alloc(false);
     assert(trapframe != NULL, "proc_fork: trapframe alloc failed");
     memmove(trapframe, p->tf, sizeof(trapframe_t));
     c->pgtbl = proc_pgtbl_init((uint64)trapframe);
