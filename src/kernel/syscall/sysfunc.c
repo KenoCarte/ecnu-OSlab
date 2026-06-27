@@ -93,7 +93,10 @@ uint64 sys_munmap() {
     成功返回0
 */
 uint64 sys_print_str() {
-
+    char str[STR_MAXLEN + 1];
+    arg_str(0, str, STR_MAXLEN);
+    printf("%s", str);
+    return 0;
 }
 
 /*
@@ -102,7 +105,10 @@ uint64 sys_print_str() {
     成功返回0
 */
 uint64 sys_print_int() {
-
+    uint32 num;
+    arg_uint32(0, &num);
+    printf("%d", num);
+    return 0;
 }
 
 /*
@@ -110,7 +116,7 @@ uint64 sys_print_int() {
     返回子进程的pid
 */
 uint64 sys_fork() {
-
+    return proc_fork();
 }
 
 /*
@@ -118,7 +124,9 @@ uint64 sys_fork() {
     uint64 addr_exit_state
 */
 uint64 sys_wait() {
-
+    uint64 addr;
+    arg_uint64(0, &addr);
+    return proc_wait(addr);
 }
 
 /*
@@ -127,7 +135,10 @@ uint64 sys_wait() {
     不返回
 */
 uint64 sys_exit() {
-
+    uint32 exit_code;
+    arg_uint32(0, &exit_code);
+    proc_exit(exit_code);
+    return 0;
 }
 
 /*
@@ -136,12 +147,17 @@ uint64 sys_exit() {
     成功返回0
 */
 uint64 sys_sleep() {
-
+    uint32 ntick;
+    arg_uint32(0, &ntick);
+    timer_wait(ntick);
+    return 0;
 }
 
 /*
     返回当前进程的pid
 */
 uint64 sys_getpid() {
-
+    proc_t* p = myproc();
+    assert(p != NULL, "sys_getpid: p is NULL");
+    return p->pid;
 }

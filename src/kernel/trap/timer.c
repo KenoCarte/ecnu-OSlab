@@ -40,6 +40,7 @@ void timer_init() {
 
 // 全局系统时钟
 static timer_t sys_timer;
+static int time_waited = 0;
 
 // 时钟创建
 void timer_create() {
@@ -52,6 +53,7 @@ void timer_update() {
     spinlock_acquire(&sys_timer.lk);
     sys_timer.ticks++;
     spinlock_release(&sys_timer.lk);
+    proc_wakeup(&time_waited);
 
 }
 
@@ -62,4 +64,13 @@ uint64 timer_get_ticks() {
     ticks = sys_timer.ticks;
     spinlock_release(&sys_timer.lk);
     return ticks;
+}
+
+// 让进程睡眠ntick个时钟周期
+void timer_wait(uint64 ntick) {
+    uint64 start_ticks = timer_get_ticks();
+    spinlock_acquire(&sys_timer.lk);
+    while (timer_get_ticks() - start_ticks < ntick)
+        proc_sleep(&time_waited, &sys_timer.lk);
+    spinlock_release(&sys_timer.lk);
 }

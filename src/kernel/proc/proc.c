@@ -138,7 +138,8 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe) {
 */
 void proc_make_first() {
     proczero = proc_alloc();
-    strncpy(proczero->name, "proczero", sizeof(proczero->name) - 1);
+    memmove(proczero->name, "proczero", sizeof("proczero"));
+    proczero->name[sizeof("proczero") - 1] = '\0';
     void* trapframe = pmem_alloc(false);
     assert(trapframe != NULL, "proc_make_first: trapframe alloc failed");
     proczero->pgtbl = proc_pgtbl_init((uint64)trapframe);
@@ -171,7 +172,8 @@ int proc_fork() {
     proc_t* p = myproc();
     proc_t* c = proc_alloc();
     assert(c != NULL, "proc_fork: c is NULL");
-    strncpy(c->name, p->name, sizeof(c->name) - 1);
+    memmove(c->name, p->name, sizeof(p->name));
+    c->name[sizeof(p->name) - 1] = '\0';
     c->state = RUNNABLE;
     c->parent = p;
     void* trapframe = pmem_alloc(false);
@@ -182,7 +184,7 @@ int proc_fork() {
     c->heap_top = p->heap_top;
     c->ustack_npage = p->ustack_npage;
     c->mmap = NULL;
-    mmap_region_t* tmp = p->mmap, cur = NULL;
+    mmap_region_t* tmp = p->mmap, * cur = NULL;
     while (tmp) {
         mmap_region_t* new_node = mmap_region_alloc();
         new_node->begin = tmp->begin;
@@ -273,10 +275,10 @@ int proc_wait(uint64 user_addr) {
     proc_t* p = myproc();
     assert(p != NULL, "proc_wait: p is NULL");
     int have_kid = 0;
+    spinlock_acquire(&p->lk);
     while (1) {
         for (int i = 0;i < N_PROC;i++) {
             proc_t* c = &proc_list[i];
-            spinlock_acquire(&c->lk);
             if (c->parent == p) {
                 have_kid = 1;
                 if (c->state == ZOMBIE) {
@@ -284,7 +286,8 @@ int proc_wait(uint64 user_addr) {
                     int exit_code = c->exit_code;
                     proc_free(c);
                     if (user_addr != 0)
-                        uvm_copyout(p->pgtbl, user_addr, (char*)&exit_code, sizeof(exit_code));
+                        uvm_copyout(p->pgtbl, user_addr, (uint64)&exit_code, sizeof(exit_code));
+                    spinlock_release(&p->lk);
                     return pid;
                 }
             }

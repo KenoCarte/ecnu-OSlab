@@ -30,9 +30,11 @@ void trap_user_handler() {
         {
         case 1:case 5:
             timer_interrupt_handler();
+            if (myproc() != NULL) proc_yield();
             break;
         case 9:
             external_interrupt_handler();
+            if (myproc() != NULL) proc_yield();
             break;
         default: // 例外处理
             printf("\nunexpected interrupt: %s\n", interrupt_info[trap_id]);
@@ -50,7 +52,7 @@ void trap_user_handler() {
             break;
         case 13:
         case 15:
-            int32 old = (int32)(p->ustack_npage);
+            // int32 old = (int32)(p->ustack_npage);
             int32 new_npage = (int32)(uvm_ustack_grow(p->pgtbl, p->ustack_npage, stval));
             if (new_npage < 0) {
                 printf("\nuvm_ustack_grow: failed at stval = %p\n", stval);

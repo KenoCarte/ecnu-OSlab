@@ -32,7 +32,7 @@ void sleeplock_release(sleeplock_t* lk) {
     spinlock_acquire(&lk->lock);
     assert(lk->locked && lk->pid == myproc()->pid, "sleeplock_release: not holding");
     lk->locked = 0;
-    lk->pid = 0;
+    lk->pid = -1;
     proc_wakeup(lk);
     spinlock_release(&lk->lock);
 }

@@ -86,12 +86,14 @@ void trap_kernel_handler() {
         {
         case 1:case 5:
             timer_interrupt_handler();
+            if (myproc() != NULL) proc_yield();
             // static int kern_tick_cnt = 0;
             // if (++kern_tick_cnt % 100 == 0)
             //     printf("[kernel-mode] timer tick #%d\n", kern_tick_cnt);
             break;
         case 9:
             external_interrupt_handler();
+            if (myproc() != NULL) proc_yield();
             break;
         default: // 例外处理
             printf("\nunexpected interrupt: %s\n", interrupt_info[trap_id]);
