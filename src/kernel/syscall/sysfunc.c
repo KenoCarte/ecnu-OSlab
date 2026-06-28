@@ -95,7 +95,7 @@ uint64 sys_munmap() {
 uint64 sys_print_str() {
     char str[STR_MAXLEN + 1];
     arg_str(0, str, STR_MAXLEN);
-    printf("%s", str);
+    printf("%s\n", str);
     return 0;
 }
 
@@ -107,7 +107,7 @@ uint64 sys_print_str() {
 uint64 sys_print_int() {
     uint32 num;
     arg_uint32(0, &num);
-    printf("%d", num);
+    printf("num = %d\n", num);
     return 0;
 }
 

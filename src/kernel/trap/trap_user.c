@@ -47,8 +47,8 @@ void trap_user_handler() {
         switch (trap_id) // 异常产生原因分类
         {
         case 8:
-            syscall();
             p->tf->user_to_kern_epc += 4;
+            syscall();
             break;
         case 13:
         case 15:

@@ -68,9 +68,11 @@ void kvm_init() {
     vm_mappages(kernel_pgtbl, (uint64)&KERNEL_DATA, (uint64)&KERNEL_DATA, (uint64)&ALLOC_BEGIN - (uint64)&KERNEL_DATA, PTE_R | PTE_W);
     vm_mappages(kernel_pgtbl, (uint64)&ALLOC_BEGIN, (uint64)&ALLOC_BEGIN, (uint64)&ALLOC_END - (uint64)&ALLOC_BEGIN, PTE_R | PTE_W);
     vm_mappages(kernel_pgtbl, TRAMPOLINE, (uint64)&trampoline, PGSIZE, PTE_R | PTE_X);
-    for (int i = 0;i < N_PROC;i++) {
+    for (int i = 1;i < N_PROC;i++) {
         void* kstk = pmem_alloc(true);
         vm_mappages(kernel_pgtbl, KSTACK(i), (uint64)kstk, PGSIZE, PTE_R | PTE_W);
+        void* kstk2 = pmem_alloc(true);
+        vm_mappages(kernel_pgtbl, KSTACK(i) + PGSIZE, (uint64)kstk2, PGSIZE, PTE_R | PTE_W);
     }
 }
 

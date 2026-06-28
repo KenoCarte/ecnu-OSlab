@@ -69,8 +69,9 @@ uint64 timer_get_ticks() {
 // 让进程睡眠ntick个时钟周期
 void timer_wait(uint64 ntick) {
     uint64 start_ticks = timer_get_ticks();
-    spinlock_acquire(&sys_timer.lk);
-    while (timer_get_ticks() - start_ticks < ntick)
+    while (timer_get_ticks() - start_ticks < ntick) {
+        spinlock_acquire(&sys_timer.lk);
         proc_sleep(&time_waited, &sys_timer.lk);
-    spinlock_release(&sys_timer.lk);
+        spinlock_release(&sys_timer.lk);
+    }
 }

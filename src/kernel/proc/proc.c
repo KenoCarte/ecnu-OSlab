@@ -6,6 +6,7 @@
 
 // in trampoline.S
 extern char trampoline[];
+extern char user_vector[];
 
 // in swtch.S
 extern void swtch(context_t* old, context_t* new);
@@ -22,6 +23,7 @@ static proc_t* proczero;
 // 全局pid + 保护它的锁
 static int global_pid;
 static spinlock_t pid_lk;
+static spinlock_t wait_lk;
 
 /* 获取一个pid */
 static int alloc_pid() {
@@ -37,6 +39,7 @@ static int alloc_pid() {
 static void proc_return() {
     proc_t* p = myproc();
     assert(p != NULL, "proc_return: p is NULL");
+
     spinlock_release(&p->lk);
     trap_user_return();
 }
@@ -50,6 +53,7 @@ void proc_init() {
     proczero = NULL;
     global_pid = 1;
     spinlock_init(&pid_lk, "pid");
+    spinlock_init(&wait_lk, "wait");
 }
 
 /*
@@ -64,16 +68,20 @@ proc_t* proc_alloc() {
             p->pid = alloc_pid();
             memset(p->name, 0, sizeof(p->name));
             p->state = RUNNABLE;
+            void* trapframe = pmem_alloc(false);
+            assert(trapframe != NULL, "proc_alloc: trapframe alloc failed");
+            p->pgtbl = proc_pgtbl_init((uint64)trapframe);
+            p->tf = (trapframe_t*)trapframe;
+            p->kstack = KSTACK(p->pid);
             p->parent = NULL;
-            p->pgtbl = NULL;
             p->mmap = NULL;
-            p->tf = NULL;
             p->heap_top = 0;
             p->ustack_npage = 0;
             p->exit_code = 0;
             p->sleep_space = NULL;
+            memset(&p->ctx, 0, sizeof(p->ctx));
             p->ctx.ra = (uint64)proc_return;
-            p->ctx.sp = 0;
+            p->ctx.sp = p->kstack + 2 * PGSIZE;
             return p;
         }
         spinlock_release(&p->lk);
@@ -108,7 +116,6 @@ void proc_free(proc_t* p) {
     p->ctx.ra = 0;
     p->ctx.sp = 0;
     memset(p->name, 0, sizeof(p->name));
-    spinlock_release(&p->lk);
 }
 
 /*
@@ -140,27 +147,22 @@ void proc_make_first() {
     proczero = proc_alloc();
     memmove(proczero->name, "proczero", sizeof("proczero"));
     proczero->name[sizeof("proczero") - 1] = '\0';
-    void* trapframe = pmem_alloc(false);
-    assert(trapframe != NULL, "proc_make_first: trapframe alloc failed");
-    proczero->pgtbl = proc_pgtbl_init((uint64)trapframe);
-    proczero->tf = (trapframe_t*)trapframe;
+
     void* ustack = pmem_alloc(false);
     assert(ustack != NULL, "proc_make_first: ustack alloc failed");
     proczero->ustack_npage = 1;
     vm_mappages(proczero->pgtbl, TRAPFRAME - PGSIZE, (uint64)ustack, PGSIZE, PTE_R | PTE_W | PTE_U);
+
     proczero->heap_top = USER_BASE;
     void* elf = pmem_alloc(false);
     assert(elf != NULL, "proc_make_first: elf alloc failed");
     memmove(elf, initcode, initcode_len);
     vm_mappages(proczero->pgtbl, proczero->heap_top, (uint64)elf, PGSIZE, PTE_R | PTE_W | PTE_X | PTE_U);
     proczero->heap_top += PGSIZE;
-    proczero->mmap = NULL;
-    proczero->kstack = KSTACK(proczero->pid);
-    proczero->tf->user_to_kern_sp = proczero->kstack + PGSIZE;
+
+    proczero->tf->user_to_kern_sp = proczero->kstack + 2 * PGSIZE;
     proczero->tf->user_to_kern_epc = USER_BASE;
     proczero->tf->sp = TRAPFRAME;
-    proczero->ctx.sp = proczero->kstack + PGSIZE;
-    mycpu()->proc = proczero;
     spinlock_release(&proczero->lk);
 }
 
@@ -174,16 +176,12 @@ int proc_fork() {
     assert(c != NULL, "proc_fork: c is NULL");
     memmove(c->name, p->name, sizeof(p->name));
     c->name[sizeof(p->name) - 1] = '\0';
-    c->state = RUNNABLE;
     c->parent = p;
-    void* trapframe = pmem_alloc(false);
-    assert(trapframe != NULL, "proc_fork: trapframe alloc failed");
-    memmove(trapframe, p->tf, sizeof(trapframe_t));
-    c->pgtbl = proc_pgtbl_init((uint64)trapframe);
-    c->tf = (trapframe_t*)trapframe;
+    *c->tf = *p->tf;
+    c->tf->user_to_kern_sp = c->kstack + 2 * PGSIZE;
     c->heap_top = p->heap_top;
     c->ustack_npage = p->ustack_npage;
-    c->mmap = NULL;
+
     mmap_region_t* tmp = p->mmap, * cur = NULL;
     while (tmp) {
         mmap_region_t* new_node = mmap_region_alloc();
@@ -197,13 +195,7 @@ int proc_fork() {
         }
         tmp = tmp->next;
     }
-    c->kstack = KSTACK(c->pid);
-    c->tf->user_to_kern_sp = c->kstack + PGSIZE;
-    c->tf->user_to_kern_epc = p->tf->user_to_kern_epc;
-    c->tf->sp = p->tf->sp;
-    c->ctx.sp = c->kstack + PGSIZE;
-    c->tf->a0 = 0;
-    c->ctx.ra = (uint64)proc_return;
+
     uvm_copy_pgtbl(p->pgtbl, c->pgtbl, c->heap_top, c->ustack_npage, c->mmap);
     int cid = c->pid;
     spinlock_release(&c->lk);
@@ -230,9 +222,9 @@ void proc_yield() {
 static void proc_reparent(proc_t* parent) {
     for (int i = 0;i < N_PROC;i++) {
         proc_t* p = &proc_list[i];
-        spinlock_acquire(&p->lk);
+        //spinlock_acquire(&p->lk);
         if (p->parent == parent) p->parent = proczero;
-        spinlock_release(&p->lk);
+        //spinlock_release(&p->lk);
     }
 }
 
@@ -242,9 +234,8 @@ static void proc_reparent(proc_t* parent) {
     tips: 调用者需要持有p的进程锁
 */
 static void proc_try_wakeup(proc_t* p) {
-    if (p->state == SLEEPING && (p->sleep_space == NULL || p->sleep_space == p)) {
+    if (p->state == SLEEPING && p->sleep_space == p) {
         p->state = RUNNABLE;
-        p->sleep_space = NULL;
     }
 }
 
@@ -255,13 +246,13 @@ static void proc_try_wakeup(proc_t* p) {
 void proc_exit(int exit_code) {
     proc_t* p = myproc();
     assert(p != NULL, "proc_exit: p is NULL");
+    spinlock_acquire(&wait_lk);
+    proc_reparent(p);
+    proc_try_wakeup(p->parent);
     spinlock_acquire(&p->lk);
     p->exit_code = exit_code;
     p->state = ZOMBIE;
-    proc_reparent(p);
-    spinlock_acquire(&p->parent->lk);
-    proc_try_wakeup(p->parent);
-    spinlock_release(&p->parent->lk);
+    spinlock_release(&wait_lk);
     proc_sched();
 }
 
@@ -275,10 +266,12 @@ int proc_wait(uint64 user_addr) {
     proc_t* p = myproc();
     assert(p != NULL, "proc_wait: p is NULL");
     int have_kid = 0;
-    spinlock_acquire(&p->lk);
+    spinlock_acquire(&wait_lk);
     while (1) {
         for (int i = 0;i < N_PROC;i++) {
             proc_t* c = &proc_list[i];
+            if (c == p) continue;
+            spinlock_acquire(&c->lk);
             if (c->parent == p) {
                 have_kid = 1;
                 if (c->state == ZOMBIE) {
@@ -287,14 +280,18 @@ int proc_wait(uint64 user_addr) {
                     proc_free(c);
                     if (user_addr != 0)
                         uvm_copyout(p->pgtbl, user_addr, (uint64)&exit_code, sizeof(exit_code));
-                    spinlock_release(&p->lk);
+                    spinlock_release(&c->lk);
+                    spinlock_release(&wait_lk);
                     return pid;
                 }
             }
             spinlock_release(&c->lk);
         }
-        if (!have_kid) return -1;
-        proc_sleep(p, &p->lk);
+        if (!have_kid) {
+            spinlock_release(&wait_lk);
+            return -1;
+        }
+        proc_sleep(p, &wait_lk);
     }
 }
 
@@ -305,8 +302,8 @@ int proc_wait(uint64 user_addr) {
 void proc_sleep(void* sleep_space, spinlock_t* lock) {
     proc_t* p = myproc();
     assert(p != NULL, "proc_sleep: p is NULL");
-    if (lock && lock != &p->lk) spinlock_release(lock);
     spinlock_acquire(&p->lk);
+    if (lock && lock != &p->lk) spinlock_release(lock);
     p->sleep_space = sleep_space;
     p->state = SLEEPING;
     proc_sched();
@@ -325,7 +322,6 @@ void proc_wakeup(void* sleep_space) {
         spinlock_acquire(&p->lk);
         if (p->state == SLEEPING && p->sleep_space == sleep_space) {
             p->state = RUNNABLE;
-            p->sleep_space = NULL;
         }
         spinlock_release(&p->lk);
     }
@@ -349,16 +345,21 @@ void proc_scheduler() {
     cpu_t* c = mycpu();
     assert(c != NULL, "proc_scheduler: c is NULL");
     c->proc = NULL;
+    int last = 0;
     while (1) {
         intr_on();
-        for (int i = 0;i < N_PROC;i++) {
+        for (int r = 0;r < N_PROC;r++) {
+            int i = (last + r + 1) % N_PROC;
             proc_t* p = &proc_list[i];
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
                 p->state = RUNNING;
                 c->proc = p;
+                // printf("proc %d is running...\n", p->pid);
                 swtch(&c->ctx, &p->ctx);
+                // printf("cpu %d: scheduled pid %d (state now %d)\n", mycpuid(), p->pid, p->state);
                 c->proc = NULL;
+                last = i;
             }
             spinlock_release(&p->lk);
         }
