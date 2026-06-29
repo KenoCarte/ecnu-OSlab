@@ -20,9 +20,22 @@
 	如果没找到返回INVALID_INODE_NUM
 	注意: 调用者需要持有ip->slk
 */
-uint32 dentry_search(inode_t *ip, char *name)
-{
-
+uint32 dentry_search(inode_t* ip, char* name) {
+	assert(sleeplock_holding(&ip->slk), "dentry_search: slk");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search: not dir!");
+	if (ip->disk_info.index[0] == 0) return INVALID_INODE_NUM;
+	uint32 len = strlen(name);
+	buffer_t* buf = buffer_get(ip->disk_info.index[0]);
+	for (uint32 i = 0;i < ip->disk_info.size / sizeof(dentry_t);i++) {
+		dentry_t* de = (dentry_t*)(buf->data + i * sizeof(dentry_t));
+		if (de->name[0] != 0 && strncmp(de->name, name, len) == 0) {
+			uint32 inode_num = de->inode_num;
+			buffer_put(buf);
+			return inode_num;
+		}
+	}
+	buffer_put(buf);
+	return INVALID_INODE_NUM;
 }
 
 /*
@@ -31,9 +44,35 @@ uint32 dentry_search(inode_t *ip, char *name)
 	如果插入失败(没有空间/发生重名)返回-1
 	注意: 调用者需要持有ip->slk
 */
-uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
-{
-
+uint32 dentry_create(inode_t* ip, uint32 inode_num, char* name) {
+	assert(sleeplock_holding(&ip->slk), "dentry_search: slk");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search: not dir!");
+	if (dentry_search(ip, name) != INVALID_INODE_NUM) return -1;
+	uint32 len = strlen(name);
+	if (len >= MAXLEN_FILENAME) return -1;
+	if (ip->disk_info.index[0] == 0) {
+		uint32 block_num = bitmap_alloc_block();
+		if (block_num == -1) return -1;
+		ip->disk_info.index[0] = block_num;
+		ip->disk_info.size = 0;
+	}
+	buffer_t* buf = buffer_get(ip->disk_info.index[0]);
+	for (uint32 i = 0;i < DENTRY_PER_BLOCK;i++) {
+		dentry_t* de = (dentry_t*)(buf->data + i * sizeof(dentry_t));
+		if (de->name[0] == 0) {
+			de->inode_num = inode_num;
+			memmove(de->name, name, len);
+			de->name[len] = '\0';
+			if (i * sizeof(dentry_t) >= ip->disk_info.size)
+				ip->disk_info.size = (i + 1) * sizeof(dentry_t);
+			buffer_write(buf);
+			buffer_put(buf);
+			return i * sizeof(dentry_t);
+		}
+	}
+	buffer_write(buf);
+	buffer_put(buf);
+	return -1;
 }
 
 /*
@@ -41,28 +80,40 @@ uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 	如果匹配失败或者遇到非法情况返回INVALID_INODE_NUM
 	注意: 调用者需要持有ip->slk
 */
-uint32 dentry_delete(inode_t *ip, char *name)
-{
-
+uint32 dentry_delete(inode_t* ip, char* name) {
+	assert(sleeplock_holding(&ip->slk), "dentry_search: slk");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search: not dir!");
+	uint32 inode_num = dentry_search(ip, name);
+	if (inode_num == INVALID_INODE_NUM) return INVALID_INODE_NUM;
+	uint32 len = strlen(name);
+	buffer_t* buf = buffer_get(ip->disk_info.index[0]);
+	for (uint32 i = 0;i < ip->disk_info.size / sizeof(dentry_t);i++) {
+		dentry_t* de = (dentry_t*)(buf->data + i * sizeof(dentry_t));
+		if (de->name[0] != 0 && strncmp(de->name, name, len) == 0) {
+			uint32 inode_num = de->inode_num;
+			buffer_put(buf);
+			return inode_num;
+		}
+	}
+	buffer_put(buf);
+	return INVALID_INODE_NUM;
 }
 
 /* 输出目录中所有有效目录项的信息 (for debug) */
-void dentry_print(inode_t *ip)
-{
+void dentry_print(inode_t* ip) {
 	assert(sleeplock_holding(&ip->slk), "dentry_print: slk!");
 	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_print: not dir!");
 
-	dentry_t *de;
-	buffer_t *buf;
+	dentry_t* de;
+	buffer_t* buf;
 
 	if (ip->disk_info.index[0] == 0)
 		panic("dentry_print: invalid index[0]!");
-	
+
 	printf("inode_num = %d, dentries:\n", ip->inode_num);
 
 	buf = buffer_get(ip->disk_info.index[0]);
-	for (de = (dentry_t*)(buf->data); de < (dentry_t*)(buf->data + BLOCK_SIZE); de++)
-	{
+	for (de = (dentry_t*)(buf->data); de < (dentry_t*)(buf->data + BLOCK_SIZE); de++) {
 		if (de->name[0] != 0) {
 			printf("dentry: offset = %d, inode_num = %d, name = %s\n",
 				(uint32)((uint8*)de - buf->data), de->inode_num, de->name);
@@ -83,37 +134,36 @@ void dentry_print(inode_t *ip)
 	get_element("", name) = NULL + name = ""
 	get_element("//", name) = NULL + name = ""
 */
-static char* get_element(char *path, char *name)
-{
+static char* get_element(char* path, char* name) {
 	/* 跳过前置的'/' */
-    while (*path == '/')
+	while (*path == '/')
 		path++;
 
 	/* 如果遇到末尾了则返回 */
-    if (*path == 0) {
+	if (*path == 0) {
 		name[0] = 0;
 		return NULL;
 	}
 
 	/* 记录起点位置 */
-    char *start = path;
-    
+	char* start = path;
+
 	/* 推进path直到遇到'/'或者到达末尾 */
 	while (*path != '/' && *path != 0)
-        path++;
+		path++;
 
 	/* 提取到的name的长度 */
-    int len = path - start;
-	len = MIN(len, MAXLEN_FILENAME-1);
-	
+	int len = path - start;
+	len = MIN(len, MAXLEN_FILENAME - 1);
+
 	/* 设置name */
 	memmove(name, start, len);
 	name[len] = 0;
 
 	/* 跳过后置的'/' */
-    while (*path == '/') path++;
+	while (*path == '/') path++;
 
-    return path;
+	return path;
 }
 /*
 	根据文件路径(/A/B/C)查找对应inode(inode_B or inode_C)
@@ -121,26 +171,75 @@ static char* get_element(char *path, char *name)
 	如果find_parent_inode == false, 返回子节点inode, name无意义
 	如果失败返回NULL
 */
-static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
-{
-
+static inode_t* __path_to_inode(char* path, char* name, bool find_parent_inode) {
+	inode_t* ip, * nxt;
+	ip = inode_get(ROOT_INODE);
+	inode_lock(ip);
+	char name_buf[MAXLEN_FILENAME];
+	char* path_buf = get_element(path, name_buf);
+	if (name_buf[0] == 0) {
+		inode_unlock(ip);
+		inode_put(ip);
+		if (find_parent_inode) {
+			name[0] = 0;
+			return NULL;
+		}
+		else {
+			return ip;
+		}
+	}
+	while (1) {
+		char* next_path = get_element(path_buf, name_buf);
+		if (next_path == NULL) {
+			if (find_parent_inode) {
+				int len = strlen(name_buf);
+				memmove(name, name_buf, len);
+				inode_unlock(ip);
+				inode_put(ip);
+				return ip;
+			}
+			else {
+				uint32 inode_num = dentry_search(ip, name_buf);
+				if (inode_num == INVALID_INODE_NUM) {
+					inode_unlock(ip);
+					inode_put(ip);
+					return NULL;
+				}
+				nxt = inode_get(inode_num);
+				inode_lock(nxt);
+				inode_unlock(ip);
+				inode_put(ip);
+				return nxt;
+			}
+		}
+		uint32 inode_num = dentry_search(ip, name_buf);
+		if (inode_num == INVALID_INODE_NUM) {
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+		nxt = inode_get(inode_num);
+		inode_lock(nxt);
+		inode_unlock(ip);
+		inode_put(ip);
+		ip = nxt;
+		path_buf = next_path;
+	}
 }
 
 /*
 	基于path寻找inode
 	失败返回NULL
 */
-inode_t* path_to_inode(char *path)
-{
+inode_t* path_to_inode(char* path) {
 	char name[MAXLEN_FILENAME];
 	return __path_to_inode(path, name, false);
 }
 
-/* 
+/*
 	基于path寻找inode->parent, 将inode->name放入name
 	失败返回NULL, 同时name无效
 */
-inode_t* path_to_parent_inode(char *path, char *name)
-{
+inode_t* path_to_parent_inode(char* path, char* name) {
 	return __path_to_inode(path, name, true);
 }
