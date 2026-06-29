@@ -6,9 +6,8 @@
 extern volatile int panicked;
 
 // uart 初始化
-void uart_init(void)
-{
-  	// 关闭中断
+void uart_init(void) {
+	// 关闭中断
 	WriteReg(IER, 0x00);
 
 	// 进入设置比特率的模式
@@ -16,7 +15,7 @@ void uart_init(void)
 
 	// 设置比特率的低位和高位，最终设置为38.4K
 	WriteReg(0, 0x03);
-  	WriteReg(1, 0x00);
+	WriteReg(1, 0x00);
 
 	// 设置传输字节长度为8bit,不校验
 	WriteReg(LCR, LCR_EIGHT_BITS);
@@ -29,8 +28,7 @@ void uart_init(void)
 }
 
 // 单个字符输出
-void uart_putc_sync(int c)
-{
+void uart_putc_sync(int c) {
 	// 关闭中断
 	push_off();
 
@@ -51,8 +49,7 @@ void uart_putc_sync(int c)
 
 // 单个字符输入
 // 失败返回-1
-int uart_getc_sync(void)
-{
+int uart_getc_sync(void) {
 	if (ReadReg(LSR) & 0x01)
 		return ReadReg(RHR);
 	else
@@ -60,13 +57,20 @@ int uart_getc_sync(void)
 }
 
 // 中断处理(键盘输入->屏幕输出)
-void uart_intr(void)
-{
-	while (1)
-	{
+void uart_intr(void) {
+	while (1) {
 		int c = uart_getc_sync();
-		if (c == -1)
-		break;
+		if (c == -1) break;
+		if (c == '\r') {
+			uart_putc_sync('\n');
+			continue;
+		}
+		if (c == 127 || c == '\b') {
+			uart_putc_sync('\b');
+			uart_putc_sync(' ');
+			uart_putc_sync('\b');
+			continue;
+		}
 		uart_putc_sync(c);
 	}
 }
