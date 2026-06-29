@@ -1,5 +1,6 @@
 #pragma once
 #include "../arch/type.h"
+#include "../lock/type.h"
 #include "../proc/type.h"
 #include <stdarg.h>
 
