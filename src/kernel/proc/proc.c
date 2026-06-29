@@ -23,7 +23,9 @@ static proc_t* proczero;
 // 全局pid + 保护它的锁
 static int global_pid;
 static spinlock_t pid_lk;
+
 static spinlock_t wait_lk;
+static int is_inited = 0;
 
 /* 获取一个pid */
 static int alloc_pid() {
@@ -39,7 +41,10 @@ static int alloc_pid() {
 static void proc_return() {
     proc_t* p = myproc();
     assert(p != NULL, "proc_return: p is NULL");
-
+    if (p->pid == 1 && is_inited == 0) {
+        is_inited = 1;
+        fs_init();
+    }
     spinlock_release(&p->lk);
     trap_user_return();
 }

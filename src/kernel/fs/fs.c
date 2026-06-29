@@ -3,8 +3,7 @@
 super_block_t sb; /* 超级块 */
 
 /* 基于superblock输出磁盘布局信息 (for debug) */
-static void sb_print()
-{
+static void sb_print() {
 	printf("\ndisk layout information:\n");
 	printf("1. super block:  block[0]\n");
 	printf("2. inode bitmap: block[%d - %d]\n", sb.inode_bitmap_firstblock,
@@ -20,7 +19,11 @@ static void sb_print()
 }
 
 /* 文件系统初始化 */
-void fs_init()
-{
-	
+void fs_init() {
+	buffer_init();
+	buffer_t* buf = buffer_get(FS_SB_BLOCK);
+	memmove(&sb, buf->data, sizeof(super_block_t));
+	assert(sb.magic_num == FS_MAGIC, "fs_init: invalid magic number");
+	buffer_put(buf);
+	sb_print();
 }

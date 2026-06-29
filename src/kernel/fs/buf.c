@@ -116,7 +116,7 @@ void buffer_put(buffer_t* buf) {
 	assert(buf->ref > 0, "buffer_put: buf->ref is 0");
 	buf->ref--;
 	if (buf->ref == 0) {
-		buffer_node_t* node = (buffer_node_t*)((char*)buf - offsetof(buffer_node_t, buf));
+		buffer_node_t* node = (buffer_node_t*)buf;
 		insert_node(node, false, true);
 	}
 	spinlock_release(&lk_buf_cache);
@@ -129,8 +129,8 @@ void buffer_put(buffer_t* buf) {
 */
 uint32 buffer_freemem(uint32 buffer_count) {
 	uint32 freed_count = 0;
+	spinlock_acquire(&lk_buf_cache);
 	for (buffer_node_t* node = buf_head_inactive.prev; node != &buf_head_inactive && buffer_count > 0; node = node->prev) {
-		spinlock_acquire(&lk_buf_cache);
 		if (node->buf.ref == 0 && node->buf.data != NULL) {
 			if (node->buf.data) pmem_free((uint64)node->buf.data, false);
 			node->buf.data = NULL;
@@ -138,8 +138,8 @@ uint32 buffer_freemem(uint32 buffer_count) {
 			buffer_count--;
 			freed_count++;
 		}
-		spinlock_release(&lk_buf_cache);
 	}
+	spinlock_release(&lk_buf_cache);
 	return freed_count;
 }
 

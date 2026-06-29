@@ -167,7 +167,7 @@ uint64 sys_getpid() {
     返回block序号
 */
 uint64 sys_alloc_block() {
-
+    return bitmap_alloc_block();
 }
 
 /*
@@ -176,7 +176,10 @@ uint64 sys_alloc_block() {
     成功返回0
 */
 uint64 sys_free_block() {
-
+    uint32 block_num;
+    arg_uint32(0, &block_num);
+    bitmap_free_block(block_num);
+    return 0;
 }
 
 /*
@@ -184,7 +187,7 @@ uint64 sys_free_block() {
     返回block序号
 */
 uint64 sys_alloc_inode() {
-
+    return bitmap_alloc_inode();
 }
 
 /*
@@ -193,7 +196,10 @@ uint64 sys_alloc_inode() {
     成功返回0
 */
 uint64 sys_free_inode() {
-
+    uint32 inode_num;
+    arg_uint32(0, &inode_num);
+    bitmap_free_inode(inode_num);
+    return 0;
 }
 
 /*
@@ -202,7 +208,10 @@ uint64 sys_free_inode() {
     成功返回0, 失败返回-1
 */
 uint64 sys_show_bitmap() {
-
+    uint32 choose_bitmap;
+    arg_uint32(0, &choose_bitmap);
+    bitmap_print(choose_bitmap == 0);
+    return 0;
 }
 
 /*
@@ -211,7 +220,10 @@ uint64 sys_show_bitmap() {
     成功返回buffer地址, 失败返回-1
 */
 uint64 sys_get_block() {
-
+    uint32 block_num;
+    arg_uint32(0, &block_num);
+    buffer_t* buf = buffer_get(block_num);
+    return (uint64)buf;
 }
 
 /*
@@ -220,7 +232,10 @@ uint64 sys_get_block() {
     成功返回0
 */
 uint64 sys_put_block() {
-
+    uint64 addr_buf;
+    arg_uint64(0, &addr_buf);
+    buffer_put((buffer_t*)addr_buf);
+    return 0;
 }
 
 /*
@@ -230,7 +245,13 @@ uint64 sys_put_block() {
     成功返回0
 */
 uint64 sys_read_block() {
-
+    uint64 addr_buf, addr_data;
+    arg_uint64(0, &addr_buf);
+    arg_uint64(1, &addr_data);
+    buffer_t* buf = (buffer_t*)addr_buf;
+    //buffer_read(buf);
+    uvm_copyout(myproc()->pgtbl, addr_data, (uint64)buf->data, BLOCK_SIZE);
+    return 0;
 }
 
 /*
@@ -240,7 +261,13 @@ uint64 sys_read_block() {
     成功返回0
 */
 uint64 sys_write_block() {
-
+    uint64 addr_buf, addr_data;
+    arg_uint64(0, &addr_buf);
+    arg_uint64(1, &addr_data);
+    buffer_t* buf = (buffer_t*)addr_buf;
+    uvm_copyin(myproc()->pgtbl, (uint64)buf->data, addr_data, BLOCK_SIZE);
+    buffer_write(buf);
+    return 0;
 }
 
 /*
@@ -248,7 +275,8 @@ uint64 sys_write_block() {
     成功返回0
 */
 uint64 sys_show_buffer() {
-
+    buffer_print_info();
+    return 0;
 }
 
 /*
@@ -257,5 +285,8 @@ uint64 sys_show_buffer() {
     成功返回0
 */
 uint64 sys_flush_buffer() {
-
+    uint32 buffer_count;
+    arg_uint32(0, &buffer_count);
+    buffer_freemem(buffer_count);
+    return 0;
 }
