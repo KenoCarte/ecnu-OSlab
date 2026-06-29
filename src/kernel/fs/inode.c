@@ -167,7 +167,16 @@ static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num)
 	调用者需要持有ip->slk并设置合理的inode_num
 */
 void inode_rw(inode_t* ip, bool write) {
-
+	uint32 inode_block_num = sb.inode_firstblock + ip->inode_num / INODE_PER_BLOCK;
+	uint32 offset = ip->inode_num % INODE_PER_BLOCK * sizeof(inode_disk_t);
+	buffer_t* buf = buffer_get(inode_block_num);
+	if (write) {
+		memmove(buf->data + offset, &ip->disk_info, sizeof(inode_disk_t));
+		buffer_write(buf);
+	}
+	else
+		memmove(&ip->disk_info, buf->data + offset, sizeof(inode_disk_t));
+	buffer_put(buf);
 }
 
 /*
@@ -177,7 +186,30 @@ void inode_rw(inode_t* ip, bool write) {
 	核心逻辑: ref++
 */
 inode_t* inode_get(uint32 inode_num) {
-
+	spinlock_acquire(&lk_inode_cache);
+	for (int i = 0; i < N_INODE; i++) {
+		if (!inode_cache[i].valid_info) continue;
+		sleeplock_acquire(&inode_cache[i].slk);
+		if (inode_cache[i].inode_num == inode_num) {
+			inode_cache[i].ref++;
+			spinlock_release(&lk_inode_cache);
+			sleeplock_release(&inode_cache[i].slk);
+			return &inode_cache[i];
+		}
+	}
+	for (int i = 0; i < N_INODE; i++) {
+		if (inode_cache[i].ref == 0) {
+			sleeplock_acquire(&inode_cache[i].slk);
+			inode_cache[i].valid_info = true;
+			inode_cache[i].inode_num = inode_num;
+			inode_cache[i].ref = 1;
+			inode_rw(&inode_cache[i], false);
+			spinlock_release(&lk_inode_cache);
+			sleeplock_release(&inode_cache[i].slk);
+			return &inode_cache[i];
+		}
+	}
+	panic("inode_get: no free inode");
 }
 
 /*
@@ -187,14 +219,29 @@ inode_t* inode_get(uint32 inode_num) {
 	注意: 返回的inode未上锁
 */
 inode_t* inode_create(uint16 type, uint16 major, uint16 minor) {
-
+	uint32 inode_num = bitmap_alloc_inode();
+	if (inode_num == -1) return NULL;
+	inode_t* ip = inode_get(inode_num);
+	sleeplock_acquire(&ip->slk);
+	memset(&ip->disk_info, 0, sizeof(inode_disk_t));
+	ip->disk_info.type = type;
+	ip->disk_info.major = major;
+	ip->disk_info.minor = minor;
+	ip->disk_info.nlink = 1;
+	ip->disk_info.size = 0;
+	inode_rw(ip, true);
+	sleeplock_release(&ip->slk);
+	return ip;
 }
 
 /*
 	ip->ref++ with lock proctect
 */
 inode_t* inode_dup(inode_t* ip) {
-
+	spinlock_acquire(&lk_inode_cache);
+	ip->ref++;
+	spinlock_release(&lk_inode_cache);
+	return ip;
 }
 
 /*
@@ -202,14 +249,17 @@ inode_t* inode_dup(inode_t* ip) {
 	如果inode->disk_info无效则更新一波
 */
 void inode_lock(inode_t* ip) {
-
+	sleeplock_acquire(&ip->slk);
+	if (ip->valid_info) return;
+	ip->valid_info = true;
+	inode_rw(ip, false);
 }
 
 /*
 	解锁inode
 */
 void inode_unlock(inode_t* ip) {
-
+	sleeplock_release(&ip->slk);
 }
 
 /*
@@ -217,7 +267,17 @@ void inode_unlock(inode_t* ip) {
 	如果达成某些条件, 可能触发彻底删除
 */
 void inode_put(inode_t* ip) {
-
+	spinlock_acquire(&lk_inode_cache);
+	ip->ref--;
+	if (ip->ref == 0 && ip->disk_info.nlink == 0) {
+		sleeplock_acquire(&ip->slk);
+		free_data_blocks(ip->disk_info.index);
+		bitmap_free_inode(ip->inode_num);
+		ip->valid_info = false;
+		ip->inode_num = INVALID_INODE_NUM;
+		sleeplock_release(&ip->slk);
+	}
+	spinlock_release(&lk_inode_cache);
 }
 
 /*
@@ -227,7 +287,15 @@ void inode_put(inode_t* ip) {
 	注意: 调用者需要持有ip->slk
 */
 void inode_delete(inode_t* ip) {
-
+	assert(sleeplock_holding(&ip->slk), "inode_delete: slk");
+	free_data_blocks(ip->disk_info.index);
+	memset(&ip->disk_info, 0, sizeof(inode_disk_t));
+	inode_rw(ip, true);
+	bitmap_free_inode(ip->inode_num);
+	spinlock_acquire(&lk_inode_cache);
+	ip->valid_info = false;
+	ip->inode_num = INVALID_INODE_NUM;
+	spinlock_release(&lk_inode_cache);
 }
 
 /*----------------------基于inode的数据读写操作--------------------*/

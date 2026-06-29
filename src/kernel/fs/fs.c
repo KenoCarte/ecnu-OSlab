@@ -21,6 +21,7 @@ static void sb_print() {
 /* 文件系统初始化 */
 void fs_init() {
 	buffer_init();
+	inode_init();
 	buffer_t* buf = buffer_get(FS_SB_BLOCK);
 	memmove(&sb, buf->data, sizeof(super_block_t));
 	assert(sb.magic_num == FS_MAGIC, "fs_init: invalid magic number");
