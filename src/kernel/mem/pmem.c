@@ -16,12 +16,12 @@ void pmem_init(void) {
     spinlock_init(&user_region.lk, "user_region");
     kern_region.list_head.next = NULL;
     user_region.list_head.next = NULL;
-    for (uint64 page = kern_region.begin; page < kern_region.end; page += PGSIZE) {
+    for (uint64 page = kern_region.end - PGSIZE; page >= kern_region.begin; page -= PGSIZE) {
         page_node_t* node = (page_node_t*)page;
         node->next = kern_region.list_head.next;
         kern_region.list_head.next = node;
     }
-    for (uint64 page = user_region.begin; page < user_region.end; page += PGSIZE) {
+    for (uint64 page = user_region.end - PGSIZE; page >= user_region.begin; page -= PGSIZE) {
         page_node_t* node = (page_node_t*)page;
         node->next = user_region.list_head.next;
         user_region.list_head.next = node;

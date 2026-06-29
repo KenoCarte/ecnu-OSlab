@@ -25,7 +25,7 @@ void inode_init() {
 	返回删除过程中是否遇到空的block_num (文件末尾)
 */
 static bool __free_data_blocks(uint32 block_num, uint32 level) {
-	if (block_num == 0 || block_num == INVALID_BLOCK_NUM) return true;
+	if (block_num == 0) return true;
 	if (level == 0) {
 		bitmap_free_block(block_num);
 		return false;
@@ -80,17 +80,17 @@ static void free_data_blocks(uint32* inode_index) {
 static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num) {
 	const uint32 P = BLOCK_SIZE / sizeof(uint32);
 	if (logical_block_num < INODE_INDEX_1) {
-		if (inode_index[logical_block_num] == INVALID_BLOCK_NUM) {
+		if (inode_index[logical_block_num] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) return -1;
 			inode_index[logical_block_num] = new_block_num;
 		}
 		return inode_index[logical_block_num];
 	}
-	else if (logical_block_num < INODE_INDEX_2) {
-		uint32 idx = (logical_block_num - INODE_INDEX_1) / P;
+	else if (logical_block_num < INODE_BLOCK_INDEX_2) {
+		uint32 idx = (logical_block_num - INODE_BLOCK_INDEX_1) / P + INODE_INDEX_1;
 		buffer_t* buf1 = NULL;
-		if (inode_index[idx] == INVALID_BLOCK_NUM) {
+		if (inode_index[idx] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) return -1;
 			inode_index[idx] = new_block_num;
@@ -100,7 +100,7 @@ static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num)
 		else buf1 = buffer_get(inode_index[idx]);
 		uint32* inode_idx_1 = (uint32*)buf1->data;
 		uint32 idx_1 = (logical_block_num - INODE_INDEX_1) % P;
-		if (inode_idx_1[idx_1] == INVALID_BLOCK_NUM) {
+		if (inode_idx_1[idx_1] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) {
 				buffer_write(buf1);
@@ -114,20 +114,20 @@ static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num)
 		buffer_put(buf1);
 		return block_num;
 	}
-	else if (logical_block_num < INODE_INDEX_3) {
+	else if (logical_block_num < INODE_BLOCK_INDEX_3) {
 		buffer_t* buf1 = NULL;
-		if (inode_index[INODE_INDEX_3] == INVALID_BLOCK_NUM) {
+		if (inode_index[INODE_INDEX_2] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) return -1;
-			inode_index[INODE_INDEX_3] = new_block_num;
+			inode_index[INODE_INDEX_2] = new_block_num;
 			buf1 = buffer_get(new_block_num);
 			memset(buf1->data, 0, BLOCK_SIZE);
 		}
-		else buf1 = buffer_get(inode_index[idx]);
+		else buf1 = buffer_get(inode_index[INODE_INDEX_2]);
 		uint32* inode_idx_1 = (uint32*)buf1->data;
-		uint32 idx_1 = (logical_block_num - INODE_INDEX_2) / P;
+		uint32 idx_1 = (logical_block_num - INODE_BLOCK_INDEX_2) / P;
 		buffer_t* buf2 = NULL;
-		if (inode_idx_1[idx_1] == INVALID_BLOCK_NUM) {
+		if (inode_idx_1[idx_1] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) {
 				buffer_write(buf1);
@@ -140,8 +140,8 @@ static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num)
 		}
 		else buf2 = buffer_get(inode_idx_1[idx_1]);
 		uint32* inode_idx_2 = (uint32*)buf2->data;
-		uint32 idx_2 = (logical_block_num - INODE_INDEX_2) % P;
-		if (inode_idx_2[idx_2] == INVALID_BLOCK_NUM) {
+		uint32 idx_2 = (logical_block_num - INODE_BLOCK_INDEX_2) % P;
+		if (inode_idx_2[idx_2] == 0) {
 			uint32 new_block_num = bitmap_alloc_block();
 			if (new_block_num == -1) {
 				buffer_write(buf2);
@@ -159,6 +159,7 @@ static uint32 locate_or_add_block(uint32* inode_index, uint32 logical_block_num)
 		buffer_put(buf1);
 		return block_num;
 	}
+	return -1;
 }
 /*---------------------关于inode的管理: get dup lock unlock put----------------------*/
 
@@ -189,27 +190,26 @@ inode_t* inode_get(uint32 inode_num) {
 	spinlock_acquire(&lk_inode_cache);
 	for (int i = 0; i < N_INODE; i++) {
 		if (!inode_cache[i].valid_info) continue;
-		sleeplock_acquire(&inode_cache[i].slk);
 		if (inode_cache[i].inode_num == inode_num) {
 			inode_cache[i].ref++;
 			spinlock_release(&lk_inode_cache);
-			sleeplock_release(&inode_cache[i].slk);
 			return &inode_cache[i];
 		}
 	}
 	for (int i = 0; i < N_INODE; i++) {
 		if (inode_cache[i].ref == 0) {
-			sleeplock_acquire(&inode_cache[i].slk);
-			inode_cache[i].valid_info = true;
 			inode_cache[i].inode_num = inode_num;
 			inode_cache[i].ref = 1;
-			inode_rw(&inode_cache[i], false);
 			spinlock_release(&lk_inode_cache);
+			sleeplock_acquire(&inode_cache[i].slk);
+			inode_cache[i].valid_info = true;
+			inode_rw(&inode_cache[i], false);
 			sleeplock_release(&inode_cache[i].slk);
 			return &inode_cache[i];
 		}
 	}
 	panic("inode_get: no free inode");
+	return NULL;
 }
 
 /*
@@ -267,17 +267,20 @@ void inode_unlock(inode_t* ip) {
 	如果达成某些条件, 可能触发彻底删除
 */
 void inode_put(inode_t* ip) {
+	bool need_delete = false;
 	spinlock_acquire(&lk_inode_cache);
 	ip->ref--;
-	if (ip->ref == 0 && ip->disk_info.nlink == 0) {
-		sleeplock_acquire(&ip->slk);
+	if (ip->ref == 0) need_delete = true;
+	spinlock_release(&lk_inode_cache);
+	sleeplock_acquire(&ip->slk);
+	if (ip->disk_info.nlink != 0) need_delete = false;
+	if (need_delete) {
 		free_data_blocks(ip->disk_info.index);
 		bitmap_free_inode(ip->inode_num);
 		ip->valid_info = false;
 		ip->inode_num = INVALID_INODE_NUM;
-		sleeplock_release(&ip->slk);
 	}
-	spinlock_release(&lk_inode_cache);
+	sleeplock_release(&ip->slk);
 }
 
 /*
@@ -340,7 +343,7 @@ uint32 inode_read_data(inode_t* ip, uint32 offset, uint32 len, void* dst, bool i
 */
 uint32 inode_write_data(inode_t* ip, uint32 offset, uint32 len, void* src, bool is_user_src) {
 	assert(sleeplock_holding(&ip->slk), "inode_write_data: slk");
-	if (offset + len > MAX_FILE_SIZE) return 0;
+	if (offset + len > INODE_MAX_SIZE) return 0;
 	if (offset + len > ip->disk_info.size) ip->disk_info.size = offset + len;
 	if (len == 0) return 0;
 	uint64 src_bytes = (uint64)src;
