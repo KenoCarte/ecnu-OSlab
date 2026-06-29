@@ -42,10 +42,11 @@ static void proc_return() {
     proc_t* p = myproc();
     assert(p != NULL, "proc_return: p is NULL");
     if (p->pid == 1 && is_inited == 0) {
+        spinlock_release(&p->lk);
         is_inited = 1;
         fs_init();
     }
-    spinlock_release(&p->lk);
+    else spinlock_release(&p->lk);
     trap_user_return();
 }
 

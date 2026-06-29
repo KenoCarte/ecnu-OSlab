@@ -53,7 +53,7 @@ void buffer_init() {
 		buf_cache[i].buf.data = NULL;
 		sleeplock_init(&buf_cache[i].buf.slk, "buf_cache");
 		buf_cache[i].next = buf_cache[i].prev = NULL;
-		insert_node(&buf_cache[i], false, false);
+		insert_node(&buf_cache[i], false, true);
 	}
 }
 
