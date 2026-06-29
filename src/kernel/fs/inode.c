@@ -239,7 +239,29 @@ void inode_delete(inode_t* ip) {
 	返回读取的数据量(字节)
 */
 uint32 inode_read_data(inode_t* ip, uint32 offset, uint32 len, void* dst, bool is_user_dst) {
-
+	assert(sleeplock_holding(&ip->slk), "inode_read_data: slk");
+	if (offset >= ip->disk_info.size) return 0;
+	if (offset + len > ip->disk_info.size) len = ip->disk_info.size - offset;
+	if (len == 0) return 0;
+	uint64 dst_bytes = (uint64)dst;
+	uint32 cur_block = offset / BLOCK_SIZE, res = 0;
+	offset %= BLOCK_SIZE;
+	while (res < len) {
+		uint32 block_num = locate_or_add_block(ip->disk_info.index, cur_block);
+		if (block_num == -1) return res;
+		uint32 to_copy = BLOCK_SIZE - offset > len - res ? len - res : BLOCK_SIZE - offset;
+		buffer_t* buf = buffer_get(block_num);
+		if (is_user_dst)
+			uvm_copyout(myproc()->pgtbl, (uint64)dst_bytes, (uint64)(buf->data + offset), to_copy);
+		else
+			memmove((void*)dst_bytes, (void*)(buf->data + offset), to_copy);
+		buffer_put(buf);
+		res += to_copy;
+		dst_bytes += to_copy;
+		offset = 0;
+		cur_block++;
+	}
+	return res;
 }
 
 /*
@@ -249,7 +271,31 @@ uint32 inode_read_data(inode_t* ip, uint32 offset, uint32 len, void* dst, bool i
 	返回写入的数据量(字节)
 */
 uint32 inode_write_data(inode_t* ip, uint32 offset, uint32 len, void* src, bool is_user_src) {
-
+	assert(sleeplock_holding(&ip->slk), "inode_write_data: slk");
+	if (offset + len > MAX_FILE_SIZE) return 0;
+	if (offset + len > ip->disk_info.size) ip->disk_info.size = offset + len;
+	if (len == 0) return 0;
+	uint64 src_bytes = (uint64)src;
+	uint32 cur_block = offset / BLOCK_SIZE, res = 0;
+	offset %= BLOCK_SIZE;
+	while (res < len) {
+		uint32 block_num = locate_or_add_block(ip->disk_info.index, cur_block);
+		if (block_num == -1) return res;
+		uint32 to_copy = BLOCK_SIZE - offset > len - res ? len - res : BLOCK_SIZE - offset;
+		buffer_t* buf = buffer_get(block_num);
+		if (is_user_src)
+			uvm_copyin(myproc()->pgtbl, (uint64)(buf->data + offset), src_bytes, to_copy);
+		else
+			memmove((void*)(buf->data + offset), (void*)src_bytes, to_copy);
+		buffer_write(buf);
+		buffer_put(buf);
+		res += to_copy;
+		src_bytes += to_copy;
+		offset = 0;
+		cur_block++;
+	}
+	inode_rw(ip, true);
+	return res;
 }
 
 static char* inode_type_list[] = { "DATA", "DIR", "DEVICE" };
