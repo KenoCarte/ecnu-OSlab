@@ -45,6 +45,10 @@ static void proc_return() {
         spinlock_release(&p->lk);
         is_inited = 1;
         fs_init();
+        p->open_file[0] = file_open("dev/stdin", FILE_OPEN_READ);
+        p->open_file[1] = file_open("dev/stdout", FILE_OPEN_WRITE);
+        p->open_file[2] = file_open("dev/stderr", FILE_OPEN_WRITE);
+        p->cwd = inode_get(ROOT_INODE);
     }
     else spinlock_release(&p->lk);
     trap_user_return();
@@ -55,6 +59,9 @@ void proc_init() {
     for (int i = 0;i < N_PROC;i++) {
         spinlock_init(&proc_list[i].lk, "proc");
         proc_list[i].state = UNUSED;
+        proc_list[i].cwd = NULL;
+        for (int j = 0;j < N_OPEN_FILE_PER_PROC;j++)
+            proc_list[i].open_file[j] = NULL;
     }
     proczero = NULL;
     global_pid = 1;
@@ -122,6 +129,16 @@ void proc_free(proc_t* p) {
     p->ctx.ra = 0;
     p->ctx.sp = 0;
     memset(p->name, 0, sizeof(p->name));
+    if (p->cwd != NULL) {
+        inode_put(p->cwd);
+        p->cwd = NULL;
+    }
+    for (int i = 0;i < N_OPEN_FILE_PER_PROC;i++) {
+        if (p->open_file[i] != NULL) {
+            file_close(p->open_file[i]);
+            p->open_file[i] = NULL;
+        }
+    }
 }
 
 /*
@@ -187,6 +204,11 @@ int proc_fork() {
     c->tf->user_to_kern_sp = c->kstack + 2 * PGSIZE;
     c->heap_top = p->heap_top;
     c->ustack_npage = p->ustack_npage;
+
+    c->cwd = inode_dup(p->cwd);
+    for (int i = 0;i < N_OPEN_FILE_PER_PROC;i++)
+        if (p->open_file[i] != NULL)
+            c->open_file[i] = file_dup(p->open_file[i]);
 
     mmap_region_t* tmp = p->mmap, * cur = NULL;
     while (tmp) {

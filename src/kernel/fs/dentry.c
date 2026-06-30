@@ -183,7 +183,7 @@ static char* get_element(char* path, char* name) {
 */
 static inode_t* __path_to_inode(char* path, char* name, bool find_parent_inode) {
 	inode_t* ip, * nxt;
-	ip = inode_get(ROOT_INODE);
+	ip = (path[0] == '/') ? inode_get(ROOT_INODE) : inode_dup(myproc()->cwd);
 	inode_lock(ip);
 	char name_buf[MAXLEN_FILENAME];
 	char* path_buf = get_element(path, name_buf);
