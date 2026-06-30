@@ -97,20 +97,86 @@ static void device_register(uint32 index, char* name,
 
 /* 初始化device_table */
 void device_init() {
+	const char* device_name[] = {
+		"/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/null", "/dev/gpt0"
+	};
+	inode_t* ip = NULL;
 
+	ip = path_to_inode("/dev");
+	if (ip == NULL) ip = path_create_inode("/dev", INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+
+	ip = path_to_inode(device_name[0]);
+	if (ip == NULL) ip = path_create_inode(device_name[0], INODE_TYPE_DEVICE, INODE_MAJOR_STDIN, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_STDIN, device_name[0], device_stdin_read, NULL);
+
+	ip = path_to_inode(device_name[1]);
+	if (ip == NULL) ip = path_create_inode(device_name[1], INODE_TYPE_DEVICE, INODE_MAJOR_STDOUT, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_STDOUT, device_name[1], NULL, device_stdout_write);
+
+	ip = path_to_inode(device_name[2]);
+	if (ip == NULL) ip = path_create_inode(device_name[2], INODE_TYPE_DEVICE, INODE_MAJOR_STDERR, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_STDERR, device_name[2], NULL, device_stderr_write);
+
+	ip = path_to_inode(device_name[3]);
+	if (ip == NULL) ip = path_create_inode(device_name[3], INODE_TYPE_DEVICE, INODE_MAJOR_ZERO, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_ZERO, device_name[3], device_zero_read, NULL);
+
+	ip = path_to_inode(device_name[4]);
+	if (ip == NULL) ip = path_create_inode(device_name[4], INODE_TYPE_DEVICE, INODE_MAJOR_NULL, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_NULL, device_name[4], device_null_read, device_null_write);
+
+	ip = path_to_inode(device_name[5]);
+	if (ip == NULL) ip = path_create_inode(device_name[5], INODE_TYPE_DEVICE, INODE_MAJOR_GPT0, INODE_MINOR_DEFAULT);
+	if (ip != NULL) inode_put(ip);
+	device_register(INODE_MAJOR_GPT0, device_name[5], NULL, device_gpt0_write);
 }
 
 /* 检查文件major字段的合法性 */
 bool device_open_check(uint16 major, uint32 open_mode) {
-
+	if (major >= N_DEVICE) {
+		printf("device_open_check: invalid major %d\n", major);
+		return false;
+	}
+	uint32 read = open_mode & FILE_OPEN_READ, write = open_mode & FILE_OPEN_WRITE;
+	switch (major) {
+	case INODE_MAJOR_STDIN:
+		return (read && !write);
+	case INODE_MAJOR_STDOUT:
+		return (write && !read);
+	case INODE_MAJOR_STDERR:
+		return (write && !read);
+	case INODE_MAJOR_ZERO:
+		return (read && !write);
+	case INODE_MAJOR_NULL:
+		return true;
+	case INODE_MAJOR_GPT0:
+		return (write && !read);
+	default:
+		return false;
+	}
+	return false;
 }
 
 /* 从设备文件中读取数据 */
 uint32 device_read_data(uint16 major, uint32 len, uint64 dst, bool is_user_dst) {
-
+	if (major >= N_DEVICE || device_table[major].read == NULL) {
+		printf("device_read_data: invalid major %d\n", major);
+		return 0;
+	}
+	return device_table[major].read(len, dst, is_user_dst);
 }
 
 /* 向设备文件写入数据 */
 uint32 device_write_data(uint16 major, uint32 len, uint64 src, bool is_user_src) {
-
+	if (major >= N_DEVICE || device_table[major].write == NULL) {
+		printf("device_write_data: invalid major %d\n", major);
+		return 0;
+	}
+	return device_table[major].write(len, src, is_user_src);
 }
