@@ -126,7 +126,29 @@ uint64 sys_getpid() {
     成功返回argc, 失败返回-1
 */
 uint64 sys_exec() {
-
+    char path[STR_MAXLEN];
+    uint64 argv_addr;
+    arg_str(0, path, sizeof(path));
+    arg_uint64(1, &argv_addr);
+    char* argv[ELF_MAXARGS];
+    int argc = 0;
+    proc_t* p = myproc();
+    if (argv_addr != 0) {
+        for (int i = 0;i < ELF_MAXARGS;i++) {
+            uint64 arg_addr;
+            uvm_copyin(p->pgtbl, (uint64)&arg_addr, argv_addr + i * sizeof(uint64), sizeof(uint64));
+            if (arg_addr == 0) break;
+            char* arg = pmem_alloc(true);
+            assert(arg != NULL, "sys_exec: pmem_alloc failed");
+            uvm_copyin_str(p->pgtbl, (uint64)arg, arg_addr, ELF_MAXARG_LEN);
+            argv[i] = arg;
+            argc++;
+        }
+    }
+    argv[argc] = NULL;
+    int ret = proc_exec(path, argv);
+    for (int i = 0; i < argc; i++) pmem_free((uint64)argv[i], true);
+    return ret;
 }
 
 /* 构建fd->file的映射, 返回fd */
@@ -148,7 +170,13 @@ static uint32 alloc_fd(file_t* file) {
     成功返回fd, 失败返回-1
 */
 uint64 sys_open() {
-
+    char path[STR_MAXLEN + 1];
+    uint32 open_mode;
+    arg_str(0, path, STR_MAXLEN);
+    arg_uint32(1, &open_mode);
+    file_t* file = file_open(path, open_mode);
+    if (file == NULL) return -1;
+    return alloc_fd(file);
 }
 
 /*
@@ -157,7 +185,13 @@ uint64 sys_open() {
     成功返回0, 失败返回-1
 */
 uint64 sys_close() {
-
+    uint32 fd;
+    arg_uint32(0, &fd);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return -1;
+    myproc()->open_file[fd] = NULL;
+    file_close(file);
+    return 0;
 }
 
 /*
@@ -168,7 +202,15 @@ uint64 sys_close() {
     成功返回读到的字节数, 失败返回0
 */
 uint64 sys_read() {
-
+    uint32 fd;
+    uint32 len;
+    uint64 addr;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &len);
+    arg_uint64(2, &addr);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return 0;
+    return file_read(file, len, addr, true);
 }
 
 /*
@@ -179,7 +221,15 @@ uint64 sys_read() {
     成功返回写入的字节数, 失败返回0
 */
 uint64 sys_write() {
-
+    uint32 fd;
+    uint32 len;
+    uint64 addr;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &len);
+    arg_uint64(2, &addr);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return 0;
+    return file_write(file, len, addr, true);
 }
 
 /*
@@ -190,7 +240,15 @@ uint64 sys_write() {
     成功返回新的偏移量, 失败返回-1
 */
 uint64 sys_lseek() {
-
+    uint32 fd;
+    uint32 offset;
+    uint64 flag;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &offset);
+    arg_uint64(2, &flag);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return -1;
+    return file_lseek(file, offset, flag);
 }
 
 /*
@@ -199,7 +257,12 @@ uint64 sys_lseek() {
     成功返回new_fd, 失败返回-1
 */
 uint64 sys_dup() {
-
+    uint32 fd;
+    arg_uint32(0, &fd);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return -1;
+    file_dup(file);
+    return alloc_fd(file);
 }
 
 /*
@@ -209,7 +272,13 @@ uint64 sys_dup() {
     成功返回0, 失败返回-1
 */
 uint64 sys_fstat() {
-
+    uint32 fd;
+    uint64 addr;
+    arg_uint32(0, &fd);
+    arg_uint64(1, &addr);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return -1;
+    return file_get_stat(file, addr);
 }
 
 /*
@@ -220,7 +289,15 @@ uint64 sys_fstat() {
     成功返回读到的字节数, 失败返回-1
 */
 uint64 sys_get_dentries() {
-
+    uint32 fd;
+    uint64 addr;
+    uint32 buffer_len;
+    arg_uint32(0, &fd);
+    arg_uint64(1, &addr);
+    arg_uint32(2, &buffer_len);
+    file_t* file;
+    if (arg_fd(0, &fd, &file) == -1) return -1;
+    return file_read(file, buffer_len, addr, true);
 }
 
 /*
@@ -229,7 +306,12 @@ uint64 sys_get_dentries() {
     成功返回0, 失败返回-1
 */
 uint64 sys_mkdir() {
-
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    inode_t* ip = path_create_inode(path, INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+    if (ip == NULL) return -1;
+    inode_put(ip);
+    return 0;
 }
 
 /*
@@ -238,7 +320,13 @@ uint64 sys_mkdir() {
     成功返回0, 失败返回-1
 */
 uint64 sys_chdir() {
-
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    inode_t* ip = path_to_inode(path);
+    if (ip == NULL) return -1;
+    if (myproc()->cwd != NULL) inode_put(myproc()->cwd);
+    myproc()->cwd = ip;
+    return 0;
 }
 
 /*
@@ -246,7 +334,13 @@ uint64 sys_chdir() {
     成功返回0, 失败返回-1
 */
 uint64 sys_print_cwd() {
-
+    proc_t* p = myproc();
+    char path[MAXLEN_FILENAME + 8];
+    if (p->cwd == NULL) return -1;
+    uint32 offset = inode_to_path(p->cwd, path, sizeof(path));
+    if (offset == -1) return -1;
+    printf("%s\n", path + offset);
+    return 0;
 }
 
 /*
@@ -256,7 +350,11 @@ uint64 sys_print_cwd() {
     成功返回0, 失败返回-1
 */
 uint64 sys_link() {
-
+    char old_path[STR_MAXLEN + 1];
+    char new_path[STR_MAXLEN + 1];
+    arg_str(0, old_path, STR_MAXLEN);
+    arg_str(1, new_path, STR_MAXLEN);
+    return path_link(old_path, new_path);
 }
 
 
@@ -266,5 +364,7 @@ uint64 sys_link() {
     成功返回0, 失败返回-1
 */
 uint64 sys_unlink() {
-
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    return path_unlink(path);
 }
