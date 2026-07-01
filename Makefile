@@ -101,7 +101,7 @@ $(TARGET)/user/%.elf: $(TARGET)/user/%.o $(USER_LIB_OBJ)
 
 # 生成 initcode.h（供内核嵌入）
 $(ELFUser): $(USER_INIT_OBJ)
-	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $(TARGET)/user/initcode.out $<
+	$(LD) $(LDFLAGS) -N -e main -Ttext 0x1000 -o $(TARGET)/user/initcode.out $<
 	$(OBJCOPY) -S -O binary $(TARGET)/user/initcode.out $(TARGET)/user/initcode
 	xxd -i $(TARGET)/user/initcode > $(ELFUser)
 

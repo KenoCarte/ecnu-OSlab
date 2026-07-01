@@ -36,7 +36,9 @@ file_t* file_open(char* path, uint32 open_mode) {
 	if (ip == NULL) {
 		if (open_mode & FILE_OPEN_CREATE) {
 			ip = path_create_inode(path, INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
-			if (ip == NULL) return NULL;
+			if (ip == NULL) {
+				return NULL;
+			}
 		}
 		else return NULL;
 	}
@@ -64,7 +66,6 @@ file_t* file_open(char* path, uint32 open_mode) {
 /* 关闭文件 */
 void file_close(file_t* file) {
 	if (file->ip != NULL) inode_put(file->ip);
-	file->ip = NULL;
 	spinlock_acquire(&lk_file_table);
 	file->ref--;
 	spinlock_release(&lk_file_table);
@@ -167,30 +168,30 @@ uint32 file_get_stat(file_t* file, uint64 user_dst) {
 }
 
 /* 基于superblock输出磁盘布局信息 (for debug) */
-static void sb_print() {
-	printf("\ndisk layout information:\n");
-	printf("1. super block:  block[0]\n");
-	printf("2. inode bitmap: block[%d - %d]\n", sb.inode_bitmap_firstblock,
-		sb.inode_bitmap_firstblock + sb.inode_bitmap_blocks - 1);
-	printf("3. inode region: block[%d - %d]\n", sb.inode_firstblock,
-		sb.inode_firstblock + sb.inode_blocks - 1);
-	printf("4. data bitmap:  block[%d - %d]\n", sb.data_bitmap_firstblock,
-		sb.data_bitmap_firstblock + sb.data_bitmap_blocks - 1);
-	printf("5. data region:  block[%d - %d]\n", sb.data_firstblock,
-		sb.data_firstblock + sb.data_blocks - 1);
-	printf("block size = %d Byte, total size = %d MB, total inode = %d\n\n", sb.block_size,
-		(int)((unsigned long long)(sb.total_blocks) * sb.block_size / 1024 / 1024), sb.total_inodes);
-}
+// static void sb_print() {
+// 	printf("\ndisk layout information:\n");
+// 	printf("1. super block:  block[0]\n");
+// 	printf("2. inode bitmap: block[%d - %d]\n", sb.inode_bitmap_firstblock,
+// 		sb.inode_bitmap_firstblock + sb.inode_bitmap_blocks - 1);
+// 	printf("3. inode region: block[%d - %d]\n", sb.inode_firstblock,
+// 		sb.inode_firstblock + sb.inode_blocks - 1);
+// 	printf("4. data bitmap:  block[%d - %d]\n", sb.data_bitmap_firstblock,
+// 		sb.data_bitmap_firstblock + sb.data_bitmap_blocks - 1);
+// 	printf("5. data region:  block[%d - %d]\n", sb.data_firstblock,
+// 		sb.data_firstblock + sb.data_blocks - 1);
+// 	printf("block size = %d Byte, total size = %d MB, total inode = %d\n\n", sb.block_size,
+// 		(int)((unsigned long long)(sb.total_blocks) * sb.block_size / 1024 / 1024), sb.total_inodes);
+// }
 
 /* 文件系统初始化 */
 void fs_init() {
 	buffer_init();
 	file_init();
-	device_init();
 	buffer_t* buf = buffer_get(FS_SB_BLOCK);
 	memmove(&sb, buf->data, sizeof(super_block_t));
 	assert(sb.magic_num == FS_MAGIC, "fs_init: invalid magic number");
 	buffer_put(buf);
-	sb_print();
+	// sb_print();
 	inode_init();
+	device_init();
 }

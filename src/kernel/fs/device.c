@@ -97,15 +97,15 @@ static void device_register(uint32 index, char* name,
 
 /* 初始化device_table */
 void device_init() {
-	const char* device_name[] = {
-		"/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/null", "/dev/gpt0"
+	char* device_name[] = {
+	   "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/null", "/dev/gpt0"
 	};
 	inode_t* ip = NULL;
 
 	ip = path_to_inode("/dev");
 	if (ip == NULL) ip = path_create_inode("/dev", INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
 	if (ip != NULL) inode_put(ip);
-
+	
 	ip = path_to_inode(device_name[0]);
 	if (ip == NULL) ip = path_create_inode(device_name[0], INODE_TYPE_DEVICE, INODE_MAJOR_STDIN, INODE_MINOR_DEFAULT);
 	if (ip != NULL) inode_put(ip);

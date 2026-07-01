@@ -6,13 +6,12 @@
 
 #include "help.h"
 
-void main(int argc, char *argv[])
-{
+void main(int argc, char* argv[]) {
 	file_stat_t stat;
-	dentry_t *de;
+	dentry_t* de;
 	uint32 root_fd, root_fd_copy, ABC_fd;
 	uint32 read_len = 0;
-	char *tmp = (char*)sys_mmap(MMAP_BEGIN, PGSIZE);
+	char* tmp = (char*)sys_mmap(MMAP_BEGIN, PGSIZE);
 	char ABC_str[] = "ABCDEFGHIJKLMNOPQRST";
 
 	/* 1. 测试 opne close dup fstat*/
@@ -52,7 +51,7 @@ void main(int argc, char *argv[])
 	fprintf(STDOUT, "read data = %s\n", tmp);
 
 	de = (dentry_t*)tmp;
- 	read_len = sys_get_dentries(root_fd, de, PGSIZE);
+	read_len = sys_get_dentries(root_fd, de, PGSIZE);
 	if (read_len == -1) {
 		fprintf(STDERR, "get dentries fail\n");
 		sys_exit(1);

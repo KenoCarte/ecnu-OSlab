@@ -205,6 +205,7 @@ static inode_t* __path_to_inode(char* path, char* name, bool find_parent_inode) 
 			if (find_parent_inode) {
 				int len = strlen(name_buf);
 				memmove(name, name_buf, len);
+				name[len] = '\0';
 				inode_unlock(ip);
 				return ip;
 			}
@@ -228,10 +229,17 @@ static inode_t* __path_to_inode(char* path, char* name, bool find_parent_inode) 
 			return NULL;
 		}
 		nxt = inode_get(inode_num);
-		inode_lock(nxt);
-		inode_unlock(ip);
-		inode_put(ip);
-		ip = nxt;
+		if (nxt != ip) {
+			inode_lock(nxt);
+			inode_unlock(ip);
+			inode_put(ip);
+			ip = nxt;
+		}
+		else {
+			inode_unlock(ip);
+			inode_put(nxt);
+			inode_lock(ip);
+		}
 		path_buf = next_path;
 		memmove(name_buf, next_name, MAXLEN_FILENAME);
 	}
@@ -297,7 +305,7 @@ uint32 dentry_transmit(inode_t* ip, uint64 dst, uint32 len, bool is_user_dst) {
 		}
 	}
 	buffer_put(buf);
-	return res;
+	return res * sizeof(dentry_t);
 }
 
 /*
@@ -360,6 +368,7 @@ inode_t* path_create_inode(char* path, uint16 type, uint16 major, uint16 minor) 
 		if (parent != NULL) inode_put(parent);
 		return NULL;
 	}
+	//printf("path_create_inode: parent inode_num = %d, name = %s\n", parent->inode_num, name);
 	inode_lock(parent);
 	inode_t* ip = inode_create(type, major, minor);
 	if (ip == NULL) {
@@ -375,6 +384,11 @@ inode_t* path_create_inode(char* path, uint16 type, uint16 major, uint16 minor) 
 		inode_unlock(ip);
 		inode_put(ip);
 		return NULL;
+	}
+	if (type == INODE_TYPE_DIR) {
+		dentry_create(ip, ip->inode_num, ".");
+		dentry_create(ip, parent->inode_num, "..");
+		inode_rw(ip, true);
 	}
 	inode_unlock(parent);
 	inode_put(parent);

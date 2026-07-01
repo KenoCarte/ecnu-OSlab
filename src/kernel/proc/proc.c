@@ -45,9 +45,9 @@ static void proc_return() {
         spinlock_release(&p->lk);
         is_inited = 1;
         fs_init();
-        p->open_file[0] = file_open("dev/stdin", FILE_OPEN_READ);
-        p->open_file[1] = file_open("dev/stdout", FILE_OPEN_WRITE);
-        p->open_file[2] = file_open("dev/stderr", FILE_OPEN_WRITE);
+        p->open_file[0] = file_open("/dev/stdin", FILE_OPEN_READ);
+        p->open_file[1] = file_open("/dev/stdout", FILE_OPEN_WRITE);
+        p->open_file[2] = file_open("/dev/stderr", FILE_OPEN_WRITE);
         p->cwd = inode_get(ROOT_INODE);
     }
     else spinlock_release(&p->lk);
@@ -201,6 +201,7 @@ int proc_fork() {
     c->name[sizeof(p->name) - 1] = '\0';
     c->parent = p;
     *c->tf = *p->tf;
+    c->tf->a0 = 0;
     c->tf->user_to_kern_sp = c->kstack + 2 * PGSIZE;
     c->heap_top = p->heap_top;
     c->ustack_npage = p->ustack_npage;
@@ -347,11 +348,13 @@ void proc_sleep(void* sleep_space, spinlock_t* lock) {
 void proc_wakeup(void* sleep_space) {
     for (int i = 0;i < N_PROC;i++) {
         proc_t* p = &proc_list[i];
-        spinlock_acquire(&p->lk);
+        bool has_lock = true;
+        if (!spinlock_holding(&p->lk)) has_lock = false;
+        if (!has_lock) spinlock_acquire(&p->lk);
         if (p->state == SLEEPING && p->sleep_space == sleep_space) {
             p->state = RUNNABLE;
         }
-        spinlock_release(&p->lk);
+        if (!has_lock) spinlock_release(&p->lk);
     }
 }
 

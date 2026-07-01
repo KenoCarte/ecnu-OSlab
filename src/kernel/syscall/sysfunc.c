@@ -19,7 +19,7 @@ uint64 sys_brk() {
         return ret;
     }
     else if (new_heap_top < p->heap_top) {
-        uint64 ret = uvm_heap_ungrow(p->pgtbl, p->heap_top, p->heap_top - new_heap_top, PTE_R | PTE_W | PTE_U);
+        uint64 ret = uvm_heap_ungrow(p->pgtbl, p->heap_top, p->heap_top - new_heap_top);
         if (ret == -1) return -1;
         p->heap_top = ret;
         return ret;
@@ -128,7 +128,7 @@ uint64 sys_getpid() {
 uint64 sys_exec() {
     char path[STR_MAXLEN];
     uint64 argv_addr;
-    arg_str(0, path, sizeof(path));
+    arg_str(0, path, STR_MAXLEN);
     arg_uint64(1, &argv_addr);
     char* argv[ELF_MAXARGS];
     int argc = 0;
@@ -336,10 +336,11 @@ uint64 sys_chdir() {
 uint64 sys_print_cwd() {
     proc_t* p = myproc();
     char path[MAXLEN_FILENAME + 8];
+    memset(path, 0, sizeof(path));
     if (p->cwd == NULL) return -1;
     uint32 offset = inode_to_path(p->cwd, path, sizeof(path));
     if (offset == -1) return -1;
-    printf("%s\n", path + offset);
+    printf("current work directory = %s\n", path + offset);
     return 0;
 }
 

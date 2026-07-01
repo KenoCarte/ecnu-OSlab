@@ -5,15 +5,14 @@
 */
 #include "help.h"
 
-void main(int argc, char *argv[])
-{
+void main(int argc, char* argv[]) {
 	dentry_t de[10];
 	file_stat_t stat;
 	char tmp[32];
 	uint32 root_fd, read_len, fd1, fd2;
 
 	sys_print_cwd();
-	
+
 	sys_mkdir("new_workdir");
 	sys_chdir("../.././new_workdir");
 	sys_print_cwd();
@@ -38,13 +37,13 @@ void main(int argc, char *argv[])
 		fprintf(STDERR, "open link.txt fail\n");
 		sys_exit(1);
 	}
-
-	fprintf(fd2, "hello world!");
-	sys_read(fd1, 32, tmp);
+	sys_write(fd1, 12, "hello world!");
+	sys_lseek(fd1, 0, LSEEK_SET);
+	sys_read(fd1, 12, tmp);
 	fprintf(STDOUT, "read data = %s\n", tmp);
 
 	sys_fstat(fd1, &stat);
-	print_fstat(&stat, "hello.txt");	
+	print_fstat(&stat, "hello.txt");
 
 	sys_close(fd1);
 	sys_close(fd2);
